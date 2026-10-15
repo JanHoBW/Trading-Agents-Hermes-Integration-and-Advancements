@@ -29,6 +29,28 @@
 
 # TradingAgents: Multi-Agents LLM Financial Trading Framework
 
+> ## 🍴 About this fork — Hermes Integration & Advancements
+>
+> This fork extends [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (base: v0.6.0) for **long-running, unattended agent operation** with a focus on **DE/EU markets**. Everything new is fork-only and documented in [`docs/advancements.md`](docs/advancements.md); the upstream README below is unchanged.
+>
+> **What changed** (short version):
+> - **DE/EU data layer** — keyless regulatory sources (BaFin/Deutsche Börse, PDMR, issuer news), Finnhub/Marketaux enrichment, cross-vendor reconciliation, German exchange tickers
+> - **Multi-horizon memory** — per-ticker evaluation log (1d/5d/20d/60d), calibration stats, realized-P&L tracking
+> - **LLM plumbing** — request timeout, `reasoning_effort`, custom OpenAI-compatible endpoints (local thinking models + a fork-only Copilot endpoint)
+>
+> **How to use this fork:**
+> 1. Clone this repo and install as described below (`uv venv`, `uv pip install -e ".[dev]"`)
+> 2. Put API keys into `.env` (this fork adds `FINNHUB_*`, `MARKETAUX_API_TOKEN`, `TRADINGAGENTS_*`)
+> 3. Point the `*_BASE_URL` variables at your LLM provider — local servers or hosted; the default request timeout is 120 s for unattended runs
+> 4. Run `tradingagents --ticker SAP.DE --save` — reports land in `~/.tradingagents/logs/reports/…`
+>
+> **Working with a Hermes agent:**
+> The package has no Hermes dependency — integration happens at the process level. A Hermes agent *profile* owns a clone of this repo and wraps it (launcher script, skill, archive). All credentials and LLM configuration live in the profile's `.env`, which the app picks up automatically. The agent runs the analysis unattended (`tradingagents --ticker SAP.DE --save --no-show`), reads the generated HTML report, and files it away. Because the fork's memory (evaluation log, calibration stats, realized P&L) persists under `~/.tradingagents`, the same agent can pick up a trade in a later session and reflect on how its earlier calls played out.
+>
+> Full how-to (home layout, `portfolio.csv`, memory, testing): [`docs/hermes-integration.md`](docs/hermes-integration.md)
+>
+> **Upstream PRs:** [#1529](https://github.com/TauricResearch/TradingAgents/pull/1529) data layer · [#1530](https://github.com/TauricResearch/TradingAgents/pull/1530) LLM plumbing · [#1531](https://github.com/TauricResearch/TradingAgents/pull/1531) memory — merge status is tracked in the advancement log.
+
 ## News
 
 <!-- news:start -->
