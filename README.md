@@ -31,12 +31,16 @@
 
 > ## 🍴 About this fork — Hermes Integration & Advancements
 >
-> This fork extends [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (base: v0.6.0) for **long-running, unattended agent operation** with a focus on **DE/EU markets**. Everything new is fork-only and documented in [`docs/advancements.md`](docs/advancements.md); the upstream README below is unchanged.
+> This fork extends [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (tracks upstream **v0.7.0**; fork base was v0.6.0) for **long-running, unattended agent operation** with a focus on **DE/EU markets**. Everything new is fork-only and documented in [`docs/advancements.md`](docs/advancements.md); the upstream README below is unchanged.
 >
 > **What changed** (short version):
 > - **DE/EU data layer** — keyless regulatory sources (BaFin/Deutsche Börse, PDMR, issuer news), Finnhub/Marketaux enrichment, cross-vendor reconciliation, German exchange tickers
-> - **Multi-horizon memory** — per-ticker evaluation log (1d/5d/20d/60d), calibration stats, realized-P&L tracking
-> - **LLM plumbing** — request timeout, `reasoning_effort`, custom OpenAI-compatible endpoints (local thinking models + a fork-only Copilot endpoint)
+> - **Multi-horizon decision memory** — per-ticker log with configurable windows (default 5/21/63/126 trading days), calibration stats, realized-P&L from a manual portfolio CSV; decisions scored from the first close after each decision (upstream #1518)
+> - **Memory v2** — structured lessons (stable JSON keys with prose fallback) and a **human feedback loop**: `tradingagents memory feedback` records your verdict on any call, and it reaches the portfolio manager on the very next run
+> - **LLM plumbing** — request timeout, `reasoning_effort` forwarding, custom OpenAI-compatible endpoints (local thinking models + a fork-only Copilot endpoint), plus upstream v0.7.0's ChatGPT plan sign-in
+>
+> **Architecture in one glance** (full version: [`docs/advancements.md`](docs/advancements.md#architecture-of-the-fork-additions)):
+> wrapper/CLI → upstream multi-agent pipeline (two model tiers: deep managers, quick analysts) → the fork's seams: a DE/EU vendor chain in `dataflows/`, the `tradingagents/memory/` subsystem (log · settlement · reflection · calibration · realized), and the LLM factory chain (Copilot → LM-Studio → Weber-Cloud). Every addition plugs in at a seam — the LangGraph nodes are untouched, and old memory entries still parse.
 >
 > **How to use this fork:**
 > 1. Clone this repo and install as described below (`uv venv`, `uv pip install -e ".[dev]"`)

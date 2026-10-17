@@ -1,7 +1,8 @@
 # Advancement Log (Fork Changelog)
 
 This file documents everything this fork adds on top of upstream
-`TauricResearch/TradingAgents` **v0.6.0** (commit `1394a3f`, 2026-10-03).
+`TauricResearch/TradingAgents` — currently at **v0.7.0** (merged as `1ea3312`,
+2026-10-17; the v1.0.0 base was v0.6.0, commit `1394a3f`, 2026-10-03).
 
 The upstream [`CHANGELOG.md`](../CHANGELOG.md) stays authoritative for upstream
 releases. This log covers the fork delta: features developed for running
@@ -10,6 +11,148 @@ market coverage. Once a piece is merged upstream, the entry is marked with the
 PR number.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+---
+
+## Architecture of the fork additions
+
+The fork is organized as a thin set of layers around the unmodified upstream
+pipeline. Nothing in the fork touches the LangGraph node logic itself — every
+addition plugs in at a seam (vendor chain, config key, LLM factory, memory
+log format, CLI subcommand).
+
+```
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  Human / Hermes agent (profile)                                          │
+ │  ta.sh wrapper (single call point: run | news)                           │
+ │  tradingagents CLI: run · backtest · memory feedback|show · login|logout │
+ └──────────────────────────────────┬───────────────────────────────────────┘
+                                    │
+ ┌──────────────────────────────────▼───────────────────────────────────────┐
+ │  Multi-agent pipeline (upstream, unchanged)                              │
+ │  Analysts → Bull/Bear research debate → Trader → Risk → Portfolio Mgr    │
+ │  Two model tiers: deep (managers) / quick (analysts)                     │
+ └──────────────┬───────────────────────────────────────────────────────────┘
+                │
+ ┌──────────────▼───────────────────┐  ┌────────────────────────────────────┐
+ │  Data layer — DE/EU (fork)       │  │  Memory subsystem                  │
+ │  issuer registry (19 DE names)   │  │  (tradingagents/memory/, fork)     │
+ │  ureg_pdmr   BaFin/UMR insiders  │  │  log.py      one markdown entry per│
+ │  issuer_rss  first-party feeds   │  │              decision, block-based │
+ │  marketaux   news aggregator     │  │              format:               │
+ │  finnhub     analyst/insider     │  │                LESSON prose        │
+ │  official_eu ECB/Eurostat macro  │  │                REFLECTION_JSON ←───┐│
+ │  yfinance + alpha_vantage OHLCV  │  │                HORIZONS {5,21,63,  │
+ │  cross-vendor OHLCV reconciliation│  │                                   │
+ │  news_supplement (ta.sh feeds)   │  │                126: outcomes}      │
+ └──────────────────────────────────┘  │                HUMAN_FEEDBACK ─────┘│
+                                       │  settlement.py window scoring from │
+                                       │  the first close after the         │
+                                       │  decision date (upstream #1518)    │
+                                       │  reflection.py  Lesson(str), 6     │
+                                       │  stable keys, parse+render         │
+                                       │  calibration.py forecast-vs-       │
+                                       │  outcome stats, per horizon        │
+                                       │  realized.py    portfolio.csv      │
+                                       │  (manual) — ground truth for cal.  │
+                                       └────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  LLM chain (fork): factory.py — provider registry extended with         │
+ │  openai_compatible (LM Studio / vLLM / Weber-Cloud), reasoning_effort    │
+ │  forwarding, configurable llm_request_timeout                            │
+ │  + upstream v0.7.0 chatgpt plan sign-in (chatgpt_auth.py)                │
+ └──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Decision-memory lifecycle
+
+```
+ Run N:     decision logged as pending entry
+            (LESSON + REFLECTION_JSON + HORIZONS skeleton)
+ Run N+k:   settlement pass — a horizon whose window has traded is scored
+            (alpha vs benchmark from the first close after the decision
+            date); the lesson evolves as later horizons resolve
+ Human:     tradingagents memory feedback RHM.DE --rating=gut --note="..."
+            (writes HUMAN_FEEDBACK; pending or settled entry; re-annotating
+            replaces the previous verdict)
+ Run N+k+1: get_past_context() includes pending entries that carry a
+            HUMAN_FEEDBACK, so the human verdict reaches the portfolio
+            manager on the very next run — the feedback loop closes without
+            waiting for the anchor horizon. Backtest (as_of) filtering still
+            drops unannotated pending entries: look-ahead stays clean.
+```
+
+### Where each addition plugs in
+
+| Subsystem | Seam | Upstream impact |
+|---|---|---|
+| DE/EU data layer | vendor chain in `dataflows/` + `issuer_registry_path` config | none (degrades keyless) |
+| LLM plumbing | `factory.build_llm_kwargs` + `openai_client` | none (additive branches) |
+| Multi-horizon memory | markdown entry blocks parsed by `memory/log.py` | none (old entries still parse) |
+| Structured lessons | `REFLECTION_JSON` block + `Lesson(str)` in `reflection.py` | none (prose fallback) |
+| Human feedback | `HUMAN_FEEDBACK` block + `cli memory` subcommand | none |
+| Realized P&L | `portfolio` config + `memory/realized.py` CSV reader | none (`path=None` = paper mode) |
+| News supplement | `news_supplement` vendor + `TRADINGAGENTS_NEWS_SUPPLEMENT` | none (opt-in) |
+| One-call wrapper | `ta.sh` in the Hermes profile (not in this repo) | none (process level) |
+
+---
+
+## [Fork v1.0.1] — 2026-10-17
+
+Everything below is relative to upstream v0.7.0.
+
+### Synced — upstream v0.7.0 (merge `1ea3312`)
+
+- **ChatGPT plan provider** — `tradingagents chatgpt login|logout`: sign in
+  with a ChatGPT Plus/Pro plan and run the `chatgpt` provider without an API
+  key (`chatgpt_auth.py`, `SIGNED_IN_PROVIDERS`).
+- **Startup release note** — `cli/updates.py` notes a newer release at start-up.
+- **Memory scoring fix (upstream #1518)** — decisions are now scored from the
+  *first close after* the decision date (`fetch_returns` enters the position
+  there and the end-of-window span is one close longer). This semantics
+  applies to the fork's multi-horizon paths too, since `fetch_horizons`
+  delegates to `fetch_returns`.
+
+### Added — structured lesson JSON (backlog #2, `868a674`)
+
+- **`Lesson(str)`** in `memory/reflection.py` — the reflector's structured
+  output is a subclass of `str`: it stays a plain string in every existing
+  code path while carrying six stable, German-language keys
+  (`LESSON_KEYS`: theseins, handlung, treffer, fehler, lektion, folge).
+- **`REFLECTION_JSON:` block** — settlement appends one machine-readable
+  JSON line per entry next to the prose lesson; `_parse_lesson_json()` reads
+  it with a prose fallback when the block is absent (old entries).
+- **Parse + render** — `parse_lesson()` / `render_lesson()` round-trip the
+  keys; reflection prompt carries a compactness budget (~80 words).
+
+### Added — human feedback loop (backlog #8, `e352088`)
+
+- **`HUMAN_FEEDBACK:` block** — one JSON line per entry:
+  `datum`, `bewertung` (`gut` / `teilweise` / `falsch`), `vermerk`.
+  Order-independent regexes; written via
+  `add_human_feedback(ticker, trade_date, note, rating, feedback_date)`.
+- **CLI** — `tradingagents memory feedback TICKER --note="..."
+  [--rating=gut|teilweise|falsch] [--date=YYYY-MM-DD]` and
+  `tradingagents memory show [TICKER] [--limit=N]`.
+- **Semantics** — re-annotating replaces the previous verdict (identical
+  input is a no-op); works on pending *and* settled entries and survives
+  further settlement (`merge_horizons` preserves the block).
+- **Feedback reaches the next run** — `get_past_context()` now includes
+  pending entries that carry a `HUMAN_FEEDBACK`: the human verdict on a
+  still-open call is valid before settlement, so the loop closes on the very
+  next run instead of waiting out the anchor horizon.
+- **Backtest stays look-ahead clean** — the `as_of` filter still drops
+  unannotated pending entries.
+
+### Added — fork-only dataflow: per-ticker Reddit overrides (`7c37f7d`)
+
+- `TRADINGAGENTS_REDDIT_OVERRIDES` (JSON path): per-ticker query + subreddit
+  overrides in `dataflows/reddit.py` — e.g. DE tickers whose default English
+  query returns nothing.
+
+### Testing
+
+- Fork main after the merge: see "Testing" below (full suite, offline-capable).
 
 ---
 
@@ -138,11 +281,14 @@ Kept out of upstream by design (see "Fork-only" below).
 
 ### Upstream status
 
-| Change | PR | State (2026-10-15) |
+| Change | PR | State (2026-10-17) |
 |---|---|---|
 | DE/EU data layer + test hardening | [#1529](https://github.com/TauricResearch/TradingAgents/pull/1529) | open |
-| LLM plumbing | [#1530](https://github.com/TauricResearch/TradingAgents/pull/1530) | open |
+| LLM plumbing | [#1530](https://github.com/TauricResearch/TradingAgents/pull/1530) | open (fork carries the `openai_compatible` branch alongside upstream v0.7.0's `chatgpt` provider) |
 | Multi-horizon memory | [#1531](https://github.com/TauricResearch/TradingAgents/pull/1531) | open |
+
+Upstream sync state: **v0.7.0 merged (`1ea3312`)** — no upstream commits left
+unintegrated (`HEAD..origin/main` empty as of 2026-10-17).
 
 ### Commit index
 
@@ -153,9 +299,17 @@ Kept out of upstream by design (see "Fork-only" below).
 | `e3a3735` | (empty baseline checkpoint) |
 | `3873dd3` `79d03ee` `40d8fc8` | multi-horizon memory |
 | `03afce6` | `.gitignore` |
+| `6e01217` `e7ec3a9` | fork docs (advancement log, banner) |
+| `7c37f7d` | per-ticker Reddit overrides (fork-only) |
+| `868a674` | structured lesson JSON (backlog #2) |
+| `e352088` | human feedback loop (backlog #8) |
+| `1ea3312` | merge of upstream v0.7.0 |
 
 ### Testing
 
-- Fork main: 1389 passed, 1 skipped (offline-capable suite, Python venv).
+- Fork main after the v0.7.0 merge: **1553 passed, 1 skipped, 1 deselected**
+  (offline-capable suite, Python venv, 2026-10-17). The previous fork-only
+  total (1389 passed) grew with upstream v0.7.0's new test modules
+  (ChatGPT auth/provider, CLI updates).
 - All new vendors degrade gracefully without keys and are tested offline via
   shipped fixtures.
