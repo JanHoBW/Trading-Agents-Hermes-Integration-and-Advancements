@@ -8,6 +8,7 @@ from cli.prompts import filter_analysts_for_asset_type, parse_analysts
 from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.memory import TradingMemoryLog
 from tradingagents.portfolio import load_portfolio
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -154,6 +155,83 @@ def backtest(
         console.print(f"[yellow]failed:[/yellow] {ticker} {date}: {reason}")
     for ticker, reason in result.settlement_failures:
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
+
+
+memory_app = typer.Typer(help="Annotate and read the decision memory log.")
+app.add_typer(memory_app, name="memory")
+
+_FEEDBACK_RATINGS = ("gut", "teilweise", "falsch")
+
+
+def _open_memory_log() -> TradingMemoryLog:
+    log = TradingMemoryLog(DEFAULT_CONFIG)
+    if not log._log_path or not log._log_path.exists():
+        console.print(f"[red]No memory log at {log._log_path} — run a ticker first.[/red]")
+        raise typer.Exit(code=1) from None
+    return log
+
+
+@memory_app.command("feedback")
+def memory_feedback(
+    ticker: str = typer.Argument(..., help="Decision ticker, e.g. RHM.DE"),
+    note: str = typer.Option(..., "--note", "-n", help="What was right or wrong about this decision"),
+    date: str = typer.Option(None, "--date", "-d", help="Decision date YYYY-MM-DD; omit to annotate the most recent entry of the ticker"),
+    rating: str = typer.Option(None, "--rating", "-r", help="gut | teilweise | falsch"),
+):
+    """Annotate a decision or outcome by hand (human feedback loop).
+
+    The annotation is stored on the entry itself (HUMAN_FEEDBACK block),
+    survives settlement rewrites, and is shown to the portfolio manager
+    on the next run of the same ticker. Re-annotating replaces the
+    previous annotation.
+    """
+    if rating and rating not in _FEEDBACK_RATINGS:
+        console.print(f"[red]--rating must be one of: {', '.join(_FEEDBACK_RATINGS)}[/red]")
+        raise typer.Exit(code=1) from None
+    log = _open_memory_log()
+    entries = [e for e in log.load_entries() if e["ticker"] == ticker]
+    if not entries:
+        available = ", ".join(sorted({e["ticker"] for e in log.load_entries()})) or "(none)"
+        console.print(f"[red]No entries for ticker '{ticker}'. Available: {available}[/red]")
+        raise typer.Exit(code=1) from None
+    if date is None:
+        target = max(e["date"] for e in entries)
+    elif any(e["date"] == date for e in entries):
+        target = date
+    else:
+        console.print(f"[red]No entry for {ticker} on {date}[/red]")
+        raise typer.Exit(code=1) from None
+    if log.add_human_feedback(ticker, target, note, rating=rating):
+        console.print(f"[green]Annotated {ticker} {target}[/green] — shown to the portfolio manager next run.")
+    else:
+        console.print(f"[yellow]Identical annotation already recorded for {ticker} {target} — nothing changed.[/yellow]")
+
+
+@memory_app.command("show")
+def memory_show(
+    ticker: str = typer.Argument(None, help="Show only this ticker"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Max entries to show (newest first)"),
+):
+    """Show recent decisions with outcomes, lessons and human feedback."""
+    log = _open_memory_log()
+    entries = log.load_entries()
+    if ticker:
+        entries = [e for e in entries if e["ticker"] == ticker]
+    for e in list(reversed(entries))[:limit]:
+        state = "pending" if e["pending"] else f"settled (raw {e['raw'] or 'n/a'}, alpha {e['alpha'] or 'n/a'})"
+        console.print(f"[bold]{e['date']} {e['ticker']} {e['rating']}[/bold] — {state}")
+        horizons = e.get("horizons") or {}
+        parts = [f"{h}d raw {v['raw']:+.1%}/alpha {v['alpha']:+.1%}"
+                 for h, v in sorted(horizons.items())
+                 if isinstance(v, dict) and v.get("raw") is not None]
+        if parts:
+            console.print(f"  horizons: {', '.join(parts)}")
+        if e.get("reflection"):
+            console.print(f"  lesson: {e['reflection']}")
+        hf = e.get("human_feedback")
+        if isinstance(hf, dict) and hf.get("vermerk"):
+            meta = ", ".join(str(x) for x in (hf.get("datum"), hf.get("bewertung")) if x)
+            console.print(f"  [yellow]feedback{(' (' + meta + ')') if meta else ''}:[/yellow] {hf['vermerk']}")
 
 
 if __name__ == "__main__":

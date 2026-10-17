@@ -3,6 +3,7 @@
 import contextlib
 import json
 import re
+from datetime import date
 from pathlib import Path
 
 from tradingagents.agents.rating import parse_rating
@@ -19,14 +20,18 @@ class TradingMemoryLog:
     # The DECISION regex must stop before it, otherwise the JSON leaks into the
     # decision text; REFLECTION_JSON (one line) is the machine-readable
     # lesson, REFLECTION the final section (greedy to end).
-    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\n(?:HORIZONS|REALIZED|REFLECTION_COVERS|REFLECTION_JSON|REFLECTION):|\Z)", re.DOTALL)
-    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*)\Z", re.DOTALL)
+    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\n(?:HORIZONS|REALIZED|REFLECTION_COVERS|REFLECTION_JSON|REFLECTION|HUMAN_FEEDBACK):|\Z)", re.DOTALL)
+    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)(?=\nHUMAN_FEEDBACK:|\Z)", re.DOTALL)
     _HORIZONS_RE = re.compile(r"HORIZONS:\n(.*)")
     _REALIZED_RE = re.compile(r"REALIZED:\n(.*)")
     _REFLECTION_COVERS_RE = re.compile(r"REFLECTION_COVERS:\n(.*)")
     # Machine-readable structured lesson (see memory/reflection.py); stored on
     # one line right before the REFLECTION block it belongs to.
     _REFLECTION_JSON_RE = re.compile(r"REFLECTION_JSON:\n([^\n]*)")
+    # Human annotation of a decision/outcome (backlog #8): one JSON line,
+    # stored at the end of the entry. The regexes above are order-
+    # independent, so the line may sit before or after REFLECTION.
+    _HUMAN_FEEDBACK_RE = re.compile(r"HUMAN_FEEDBACK:\n([^\n]*)")
 
     def __init__(self, config: dict = None):
         cfg = config or {}
@@ -152,14 +157,21 @@ class TradingMemoryLog:
     ) -> str:
         """Return formatted past context string for agent prompt injection.
 
-        When ``as_of`` (yyyy-mm-dd) is given, only lessons whose outcome was
+        ``as_of`` (yyyy-mm-dd) is given, only lessons whose outcome was
         already known by that date are included — an entry is kept only if it
         stores a resolution date (``resolved:...``) that is on or before
         ``as_of``. This keeps a historical/backtest run from learning from
         outcomes that had not happened yet (#1251). ``as_of=None`` disables the
         filter, so live runs and pre-migration entries are unaffected.
+
+        Pending entries are normally excluded (no verified outcome), but a
+        pending entry that carries a human annotation (backlog #8) is
+        included: the annotation is the human's own verdict on the call and
+        is valid before settlement, so the feedback loop can close on the
+        very next run instead of waiting out the anchor horizon.
         """
-        entries = [e for e in self.load_entries() if not e.get("pending")]
+        entries = [e for e in self.load_entries()
+                   if not e.get("pending") or e.get("human_feedback")]
         if as_of is not None:
             entries = [e for e in entries if e.get("resolved") and e["resolved"] <= as_of]
         if not entries:
@@ -336,6 +348,9 @@ class TradingMemoryLog:
                 rjm = self._REFLECTION_JSON_RE.search(body)
                 lesson_json_val = (reflection_json if reflection_json is not None
                                    else self._parse_lesson_json(rjm.group(1) if rjm else None))
+                hfm = self._HUMAN_FEEDBACK_RE.search(body)
+                human_feedback_val = self._parse_human_feedback(
+                    hfm.group(1) if hfm else None)
                 new_block = f"{new_tag}\n\nDECISION:\n{decision}"
                 if hz:
                     new_block += ("\n\nHORIZONS:\n"
@@ -349,6 +364,9 @@ class TradingMemoryLog:
                                   + json.dumps(lesson_json_val, ensure_ascii=False, sort_keys=True))
                 if refl:
                     new_block += "\n\nREFLECTION:\n" + refl
+                if isinstance(human_feedback_val, dict) and human_feedback_val:
+                    new_block += ("\n\nHUMAN_FEEDBACK:\n"
+                                  + json.dumps(human_feedback_val, ensure_ascii=False, sort_keys=True))
                 blocks[i] = new_block
                 updated = True
                 break
@@ -357,6 +375,55 @@ class TradingMemoryLog:
             blocks = self._apply_rotation(blocks)
             self._atomic_write(self._SEPARATOR.join(blocks))
         return True
+
+    def add_human_feedback(self, ticker: str, trade_date: str, note: str,
+                           rating: str | None = None,
+                           feedback_date: str | None = None) -> bool:
+        """Attach a human annotation to one entry (backlog #8).
+
+        The annotation — why the call was right or wrong, what the human
+        saw that the model missed — is stored as a one-line HUMAN_FEEDBACK
+        JSON block at the end of the entry. It works on pending entries
+        (the point is annotating a fresh run's decision) as well as
+        settled ones, and it survives every settlement rewrite:
+        ``merge_horizons`` carries the stored annotation into the rebuilt
+        block. Re-annotating replaces the previous annotation; writing the
+        identical one again is a no-op. Returns whether the log changed.
+        """
+        if not self._log_path or not self._log_path.exists() or not note.strip():
+            return False
+        payload = {"datum": feedback_date or date.today().isoformat()}
+        if rating:
+            payload["bewertung"] = rating
+        payload["vermerk"] = note.strip()
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        suffix = "\n\nHUMAN_FEEDBACK:\n" + line
+        with locked(self._log_path):
+            text = self._log_path.read_text(encoding="utf-8")
+            blocks = text.split(self._SEPARATOR)
+            prefix = f"[{trade_date} | {ticker} |"
+            updated = False
+            for i, block in enumerate(blocks):
+                if not block.strip():
+                    continue
+                tag_line = block.strip().splitlines()[0].strip()
+                if not (tag_line.startswith(prefix) and tag_line.endswith("]")):
+                    continue
+                stripped = block.rstrip()
+                # Strip a previous annotation (it is always the block's last
+                # block), then append the new one. Identical content -> no-op.
+                marker = "\n\nHUMAN_FEEDBACK:\n"
+                cut = stripped.rfind(marker)
+                if cut != -1 and stripped[cut + len(marker):] == line:
+                    return False
+                if cut != -1:
+                    stripped = stripped[:cut]
+                blocks[i] = stripped + suffix
+                updated = True
+                break
+            if updated:
+                self._atomic_write(self._SEPARATOR.join(blocks))
+        return updated
 
     def merge_realized(self, ticker: str, trade_date: str, realized_return,
                        close_date: str | None = None, note: str | None = None) -> bool:
@@ -542,6 +609,17 @@ class TradingMemoryLog:
             return None
         return data if isinstance(data, dict) and data else None
 
+    @staticmethod
+    def _parse_human_feedback(body: str | None) -> dict | None:
+        """Parse a HUMAN_FEEDBACK line into the annotation dict."""
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.strip())
+        except (ValueError, AttributeError, TypeError):
+            return None
+        return data if isinstance(data, dict) and data else None
+
     def _parse_horizons(self, body: str, legacy: dict) -> dict[int, dict]:
         """Extract the HORIZONS block; for legacy entries (no block) fall back
         to the single anchor horizon implied by the resolved tag."""
@@ -603,6 +681,9 @@ class TradingMemoryLog:
         rj_match = self._REFLECTION_JSON_RE.search(body)
         entry["reflection_json"] = self._parse_lesson_json(
             rj_match.group(1) if rj_match else None)
+        hf_match = self._HUMAN_FEEDBACK_RE.search(body)
+        entry["human_feedback"] = self._parse_human_feedback(
+            hf_match.group(1) if hf_match else None)
         realized_match = self._REALIZED_RE.search(body)
         entry["realized"] = self._parse_realized(
             realized_match.group(1) if realized_match else None)
@@ -628,6 +709,10 @@ class TradingMemoryLog:
         parts.append(f"DECISION:\n{e['decision']}")
         if e["reflection"]:
             parts.append(f"REFLECTION:\n{e['reflection']}")
+        hf = e.get("human_feedback")
+        if isinstance(hf, dict) and hf.get("vermerk"):
+            meta = ", ".join(str(x) for x in (hf.get("datum"), hf.get("bewertung")) if x)
+            parts.append(f"HUMAN FEEDBACK{(' (' + meta + ')') if meta else ''}\n{hf['vermerk']}")
         return "\n\n".join(parts)
 
     @staticmethod

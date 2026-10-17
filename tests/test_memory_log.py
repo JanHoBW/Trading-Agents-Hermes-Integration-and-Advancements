@@ -1502,3 +1502,133 @@ def test_settle_pending_persists_structured_lesson(tmp_path):
     assert entries[0]["reflection"] == render_lesson(LESSON_SAMPLE)
     assert entries[0]["reflection_json"] == LESSON_SAMPLE
     assert entries[0]["reflection_covers"] == [5]
+
+
+# --- Human feedback (backlog #8) ----------------------------------------------------
+
+FEEDBACK_NOTE = "The target price rested on old volumes; the program win is the real driver."
+
+
+@pytest.mark.unit
+def test_add_human_feedback_pending_entry_roundtrip(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert log.add_human_feedback("NVDA", "2026-01-05", FEEDBACK_NOTE,
+                                  rating="gut", feedback_date="2026-01-06")
+    entry = log.load_entries()[0]
+    assert entry["human_feedback"] == {
+        "datum": "2026-01-06", "bewertung": "gut", "vermerk": FEEDBACK_NOTE}
+    # The decision text must not swallow the annotation JSON.
+    assert "HUMAN_FEEDBACK" not in entry["decision"]
+    assert "vermerk" not in entry["decision"]
+
+
+@pytest.mark.unit
+def test_add_human_feedback_idempotent_and_replaces(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert log.add_human_feedback("NVDA", "2026-01-05", "first note",
+                                  feedback_date="2026-01-06")
+    # Identical annotation again -> no-op.
+    assert not log.add_human_feedback("NVDA", "2026-01-05", "first note",
+                                      feedback_date="2026-01-06")
+    # A changed annotation replaces the previous one.
+    assert log.add_human_feedback("NVDA", "2026-01-05", "second note",
+                                  feedback_date="2026-01-07")
+    entry = log.load_entries()[0]
+    assert entry["human_feedback"]["vermerk"] == "second note"
+    assert "first note" not in log._log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_add_human_feedback_missing_entry_returns_false(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert not log.add_human_feedback("AAPL", "2026-01-05", "note")
+    assert not log.add_human_feedback("NVDA", "2026-02-01", "note")
+    assert not log.add_human_feedback("NVDA", "2026-01-05", "   ")
+    assert log.load_entries()[0]["human_feedback"] is None
+
+
+@pytest.mark.unit
+def test_human_feedback_not_swallowed_by_reflection_regex(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    log.merge_horizons("NVDA", "2026-01-05", {5: (-0.02, -0.04, 5, "2026-01-12")},
+                       reflection="The lesson learned.", anchor_days=5,
+                       resolution_date="2026-01-12")
+    assert log.add_human_feedback("NVDA", "2026-01-05", "Human note.",
+                                  feedback_date="2026-01-06")
+    entry = log.load_entries()[0]
+    assert entry["reflection"] == "The lesson learned."
+    assert "HUMAN_FEEDBACK" not in entry["reflection"]
+    assert entry["human_feedback"]["vermerk"] == "Human note."
+
+
+@pytest.mark.unit
+def test_human_feedback_persists_through_merge_horizons(tmp_path):
+    # The settlement rewrite rebuilds the entry block; the annotation must
+    # survive it (annotating a fresh run, then settling, is the real flow).
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert log.add_human_feedback("NVDA", "2026-01-05",
+                                  "Annotated while pending.", rating="teilweise")
+    log.merge_horizons("NVDA", "2026-01-05", {5: (-0.02, -0.04, 5, "2026-01-12")},
+                       reflection="Lesson.", anchor_days=5,
+                       resolution_date="2026-01-12")
+    log.merge_horizons("NVDA", "2026-01-05", {21: (0.01, -0.01, 21, "2026-01-29")},
+                       reflection=None, anchor_days=None)
+    entry = log.load_entries()[0]
+    assert entry["human_feedback"]["vermerk"] == "Annotated while pending."
+    assert entry["human_feedback"]["bewertung"] == "teilweise"
+    assert entry["pending"] is False
+
+
+@pytest.mark.unit
+def test_human_feedback_order_independent(tmp_path):
+    # update_with_outcome appends REFLECTION after the body, so the annotation
+    # line can sit BEFORE REFLECTION; parsing must not depend on order.
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert log.add_human_feedback("NVDA", "2026-01-05", "Early note.")
+    assert log.update_with_outcome("NVDA", "2026-01-05", -0.02, -0.04, 5,
+                                   "Lesson body.", "2026-01-12")
+    entry = log.load_entries()[0]
+    assert entry["pending"] is False
+    assert entry["reflection"] == "Lesson body."
+    assert entry["human_feedback"]["vermerk"] == "Early note."
+    assert "HUMAN_FEEDBACK" not in entry["reflection"]
+    assert "HUMAN_FEEDBACK" not in entry["decision"]
+
+
+@pytest.mark.unit
+def test_format_full_renders_human_feedback(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert log.add_human_feedback("NVDA", "2026-01-05", "Watched the program wins.",
+                                  rating="gut", feedback_date="2026-01-06")
+    text = log._format_full(log.load_entries()[0])
+    assert "HUMAN FEEDBACK (2026-01-06, gut)" in text
+    assert "Watched the program wins." in text
+
+
+
+@pytest.mark.unit
+def test_past_context_includes_pending_entry_with_feedback(tmp_path):
+    # A fresh run's decision is still pending; the human annotation must
+    # reach the next run's context without waiting for settlement.
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    log.add_human_feedback("NVDA", "2026-01-05", "Annotate the fresh call.")
+    ctx = log.get_past_context("NVDA")
+    assert "NVDA" in ctx
+    assert "HUMAN FEEDBACK" in ctx
+    assert "Annotate the fresh call." in ctx
+
+
+@pytest.mark.unit
+def test_past_context_excludes_plain_pending_entry(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    assert log.get_past_context("NVDA") == ""
+
