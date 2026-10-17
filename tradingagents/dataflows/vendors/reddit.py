@@ -19,12 +19,14 @@ from __future__ import annotations
 import html
 import http.client
 import logging
+import os
 import random
 import re
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -91,6 +93,39 @@ def subreddits_for(ticker: str) -> tuple[str, ...]:
         return DEFAULT_SUBREDDITS
     coin = _COIN_SUBREDDITS.get(base)
     return ((coin,) if coin else ()) + CRYPTO_SUBREDDITS
+
+
+# Hand-curated per-ticker overrides, loaded lazily from the file named by
+# TRADINGAGENTS_REDDIT_OVERRIDES (references/hardcoded_sources.yaml in the
+# hermes-trading-scenarios skill — human-editable, grows over time). Lets a
+# ticker whose bare symbol is not how people discuss it (RHM.DE -> "Rheinmetall")
+# search extra terms and/or its own subreddits. Config errors never break the
+# sentiment analyst: on any failure we fall back to default behaviour.
+_REDDIT_OVERRIDES: dict | None = None
+
+
+def _load_reddit_overrides() -> dict:
+    global _REDDIT_OVERRIDES
+    if _REDDIT_OVERRIDES is not None:
+        return _REDDIT_OVERRIDES
+    overrides: dict = {}
+    path = os.environ.get("TRADINGAGENTS_REDDIT_OVERRIDES", "").strip()
+    if path and Path(path).is_file():
+        try:
+            import yaml  # PyYAML ships with the TradingAgents venv
+
+            data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            for ticker, spec in (data.get("tickers") or {}).items():
+                reddit_spec = (spec or {}).get("reddit") or {}
+                queries = [str(q) for q in reddit_spec.get("queries", []) if str(q).strip()]
+                subs = [str(s).lstrip("r/").strip()
+                        for s in reddit_spec.get("subreddits", []) if str(s).strip()]
+                if queries or subs:
+                    overrides[str(ticker)] = {"queries": queries, "subreddits": subs}
+        except Exception as exc:  # noqa: BLE001 - degrade to defaults, never raise
+            logger.warning("Reddit override load failed for %s: %s", path, exc)
+    _REDDIT_OVERRIDES = overrides
+    return overrides
 
 # Reddit's maximum page size. A week of posts for a ticker across the default
 # subreddits fits well inside one page, which keeps a high-volume subreddit from
@@ -276,20 +311,50 @@ def fetch_reddit_posts(
     # Crypto reaches us as a Yahoo pair (BTC-USD); search Reddit for the base
     # ("BTC") so the query actually matches discussion instead of near-nothing.
     ticker = crypto_base(ticker) or ticker
+    # Hand-curated override (hardcoded_sources.yaml via TRADINGAGENTS_REDDIT_OVERRIDES):
+    # extra search terms and/or subreddits for tickers whose bare symbol is not how
+    # people discuss them (e.g. RHM.DE -> "Rheinmetall").
+    ov = _load_reddit_overrides().get(ticker) or {}
+    if ov.get("subreddits"):
+        subreddits = list(ov["subreddits"])
+    query_terms = [ticker] + [q for q in ov.get("queries", []) if q.lower() != ticker.lower()]
     label = ", ".join(f"r/{s}" for s in subreddits)
-    fetched = _fetch_subreddit_rss(ticker, "+".join(subreddits), _FEED_PAGE, timeout)
-    if fetched is None:
+    mention = " or ".join(t.upper() for t in query_terms)
+
+    # One combined request per search term (the feed is newest-first and capped);
+    # merge + dedupe. A failed term degrades to the others, not to silence.
+    fetched: list[dict] = []
+    term_lengths: list[int] = []
+    failed_terms = 0
+    for term in query_terms:
+        part = _fetch_subreddit_rss(term, "+".join(subreddits), _FEED_PAGE, timeout)
+        if part is None:
+            failed_terms += 1
+            continue
+        fetched.extend(part)
+        term_lengths.append(len(part))
+    if failed_terms == len(query_terms):
         return f"<Reddit unavailable: fetch failed ({label}); this is not an absence of discussion>"
+
+    seen = set()
+    deduped = []
+    for p in fetched:
+        key = ((p.get("title") or "").lower(), p.get("created_utc"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    fetched = deduped
 
     window = bool(start_date and end_date)
     posts = _within_window(fetched, start_date, end_date)
     if not posts:
         gap = window and coverage_gap(
             _coverage_dates(fetched), start_date, end_date,
-            "Reddit search", f"discussion of {ticker.upper()}",
+            "Reddit search", f"discussion of {mention}",
         )
         period = f"within {start_date}..{end_date}" if window else "in the past 7 days"
-        return gap or f"<no Reddit posts found mentioning {ticker.upper()} across {label} {period}>"
+        return gap or f"<no Reddit posts found mentioning {mention} across {label} {period}>"
 
     def sub_of(p):
         return p.get("subreddit") or (subreddits[0] if len(subreddits) == 1 else "unknown")
@@ -308,20 +373,20 @@ def fetch_reddit_posts(
     for p in posts:
         by_sub.setdefault(sub_of(p).lower(), (sub_of(p), []))[1].append(p)
 
-    page_full = len(fetched) >= _FEED_PAGE
+    page_full = any(n >= _FEED_PAGE for n in term_lengths)
     blocks = []
     for sub, sub_posts in by_sub.values():
         if not sub_posts:
             if sub.lower() in screened_out:
-                blocks.append(f"r/{sub}: <no posts about {ticker.upper()} after screening>")
+                blocks.append(f"r/{sub}: <no posts about {mention} after screening>")
             else:
                 blocks.append(
                     f"r/{sub}: <not among the newest {_FEED_PAGE} matches across {label}>"
-                    if page_full else f"r/{sub}: <no posts found mentioning {ticker.upper()}>"
+                    if page_full else f"r/{sub}: <no posts found mentioning {mention}>"
                 )
             continue
         sub_posts = sub_posts[:limit_per_sub]  # the feed is newest-first
-        lines = [f"r/{sub} — {len(sub_posts)} recent posts mentioning {ticker.upper()}:"]
+        lines = [f"r/{sub} — {len(sub_posts)} recent posts mentioning {mention}:"]
         for p in sub_posts:
             title = (p.get("title") or "").replace("\n", " ").strip()
             created = p.get("created_utc")
