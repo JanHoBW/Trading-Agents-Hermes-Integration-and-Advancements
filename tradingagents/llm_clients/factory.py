@@ -105,6 +105,10 @@ def _coerce_request_timeout(value):
     return n
 
 
+# Providers that take OpenAI's ``openai_reasoning_effort``.
+REASONING_EFFORT_PROVIDERS = ("openai", "chatgpt")
+
+
 def build_llm_kwargs(config: dict) -> dict[str, Any]:
     """Keyword arguments for ``create_llm_client`` from a TradingAgents config."""
     kwargs = {}
@@ -115,10 +119,15 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
         if thinking_level:
             kwargs["thinking_level"] = thinking_level
 
-    elif provider in ("openai", "openai_compatible"):
-        # Native OpenAI and generic local endpoints (LM Studio, vLLM) both
-        # accept ``reasoning_effort`` for thinking-capable models; the client
-        # drops it where the model cannot take it.
+    elif provider in REASONING_EFFORT_PROVIDERS:
+        reasoning_effort = config.get("openai_reasoning_effort")
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+    elif provider == "openai_compatible":
+        # Fork (PR #1530): generic local endpoints (LM Studio, vLLM, Weber-Cloud)
+        # also accept ``reasoning_effort`` for thinking-capable models; the
+        # client drops it where the model cannot take it.
         reasoning_effort = config.get("openai_reasoning_effort")
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort

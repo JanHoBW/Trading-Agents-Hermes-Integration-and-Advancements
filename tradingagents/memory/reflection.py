@@ -149,7 +149,7 @@ class Reflector:
         """
         return (
             "You are a trading analyst reviewing your own past decision now that the outcome is known.\n"
-            f"The outcome covers {holding_days} trading days after the analysis date, "
+            f"The outcome covers {holding_days} trading days from the first close after the analysis date, "
             "which may be shorter than the horizon the decision was written for.\n"
             + _JSON_INSTRUCTION + "\n\n"
             "Fill the fields in this order:\n"

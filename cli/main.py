@@ -1,6 +1,9 @@
 import sys
+from enum import StrEnum
+from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 from cli.display import console
 from cli.models import AnalystType, AssetType
@@ -9,6 +12,7 @@ from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.memory import TradingMemoryLog
+from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -232,6 +236,40 @@ def memory_show(
         if isinstance(hf, dict) and hf.get("vermerk"):
             meta = ", ".join(str(x) for x in (hf.get("datum"), hf.get("bewertung")) if x)
             console.print(f"  [yellow]feedback{(' (' + meta + ')') if meta else ''}:[/yellow] {hf['vermerk']}")
+
+
+# The plans `login` and `logout` take: the providers signed in to, not keyed.
+Plan = StrEnum("Plan", {name: name for name in SIGNED_IN_PROVIDERS})
+
+
+@app.command()
+def login(plan: Annotated[Plan, typer.Argument(help="The plan to sign in with")]):
+    """Sign in with your ChatGPT Plus or Pro plan, for the chatgpt provider."""
+    from tradingagents.llm_clients import chatgpt_auth
+
+    try:
+        # One unwrapped line, so the sign-in address can be copied whole.
+        email = chatgpt_auth.sign_in(
+            say=lambda line: console.print(line, soft_wrap=True, markup=False, highlight=False))
+    except chatgpt_auth.ChatGPTAuthError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]Signed in to ChatGPT as {escape(email)}.[/green]")
+
+
+@app.command()
+def logout(plan: Annotated[Plan, typer.Argument(help="The plan to sign out of")]):
+    """Sign out of your ChatGPT plan: revoke this machine's access and forget it."""
+    from tradingagents.llm_clients import chatgpt_auth
+
+    outcome = chatgpt_auth.sign_out()
+    if outcome == "revoked":
+        console.print("Signed out of ChatGPT.")
+    elif outcome == "forgotten":
+        console.print("[yellow]Signed out here, but OpenAI could not be reached to revoke the sign-in; "
+                      "it stays valid at OpenAI until it expires.[/yellow]")
+    else:
+        console.print("Not signed in to ChatGPT.")
 
 
 if __name__ == "__main__":
