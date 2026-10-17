@@ -1,5 +1,6 @@
 """Tests for TradingMemoryLog — storage, deferred reflection, PM injection, legacy removal."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -10,7 +11,9 @@ from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
 from tradingagents.graph.propagation import Propagator
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.memory import TradingMemoryLog, settlement
-from tradingagents.memory.reflection import Reflector
+from tradingagents.memory.reflection import (
+    LESSON_KEYS, Lesson, Reflector, parse_lesson, render_lesson,
+)
 
 _SEP = TradingMemoryLog._SEPARATOR
 
@@ -1298,3 +1301,204 @@ def test_a_run_does_not_wait_on_another_settlement_pass(tmp_path):
     worker.join()
 
     assert elapsed < 1 and result.settled == [] and result.failed == []
+
+
+# ---------------------------------------------------------------------------
+# Structured lesson (memory backlog #2): JSON instead of free prose
+# ---------------------------------------------------------------------------
+
+LESSON_SAMPLE = {
+    "these_claim": "Defence capex cycle is durable and converts to revenue.",
+    "vorhersage": "Outperformance over the 21-126 day windows as orders convert.",
+    "outcome_evidenz": "Alpha negative in every measured window; the pattern undercuts the near term.",
+    "lektion": "Require delivery evidence before overweighting order-led theses.",
+    "konfidenz": 0.8,
+    "horizonte": [5, 21],
+}
+
+
+@pytest.mark.unit
+def test_lesson_is_str_with_structured_payload():
+    lesson = Lesson("rendered text", LESSON_SAMPLE)
+    assert isinstance(lesson, str)
+    assert lesson == "rendered text"
+    assert lesson + "!" == "rendered text!"
+    assert lesson.lesson_json == LESSON_SAMPLE
+    assert lesson.json == LESSON_SAMPLE
+    # Plain prose fallback: no payload.
+    assert Lesson("prose").lesson_json is None
+
+
+@pytest.mark.unit
+def test_parse_lesson_normalises_fields():
+    raw = json.dumps({**LESSON_SAMPLE, "konfidenz": 1.7,
+                      "horizonte": [21, 5, "21", 0, -3, 9.5],
+                      "lektion": "  spaced \t out  "})
+    d = parse_lesson(raw)
+    assert d is not None
+    assert set(d) <= set(LESSON_KEYS)
+    assert d["lektion"] == "spaced out"
+    assert d["konfidenz"] == 1.0  # clamped into [0, 1]
+    assert d["horizonte"] == [5, 21]  # ints only, positive, sorted, deduped
+
+
+@pytest.mark.unit
+def test_parse_lesson_accepts_fenced_json_and_prose_padding():
+    raw = 'Here is the lesson:\n```json\n' + json.dumps(LESSON_SAMPLE) + '\n```\nHope that helps.'
+    assert parse_lesson(raw) == LESSON_SAMPLE
+
+
+@pytest.mark.unit
+def test_parse_lesson_word_confidence():
+    high = parse_lesson(json.dumps({**LESSON_SAMPLE, "konfidenz": "high"}))
+    low = parse_lesson(json.dumps({**LESSON_SAMPLE, "konfidenz": "niedrig"}))
+    so = parse_lesson(json.dumps({**LESSON_SAMPLE, "konfidenz": "so-so"}))
+    assert high is not None and high["konfidenz"] == 0.8
+    assert low is not None and low["konfidenz"] == 0.2
+    assert so is not None and "konfidenz" not in so
+
+
+@pytest.mark.unit
+def test_parse_lesson_rejects_prose_and_missing_lesson():
+    assert parse_lesson("Directionally correct. Thesis confirmed.") is None
+    assert parse_lesson(json.dumps({k: v for k, v in LESSON_SAMPLE.items() if k != "lektion"})) is None
+    assert parse_lesson(json.dumps(["not", "a", "dict"])) is None
+    assert parse_lesson("") is None
+    assert parse_lesson(None) is None
+
+
+@pytest.mark.unit
+def test_render_lesson_is_deterministic_and_compact():
+    text = render_lesson(LESSON_SAMPLE)
+    lines = text.splitlines()
+    assert lines[0].startswith("These: ")
+    assert lines[1].startswith("Vorhersage: ")
+    assert lines[2].startswith("Outcome: ")
+    assert lines[3].startswith("Lektion: ")
+    assert "Konfidenz: 0.8" in lines[3]
+    assert "Fenster: 5, 21" in lines[3]
+    assert text == render_lesson(LESSON_SAMPLE)  # stable across calls
+
+
+@pytest.mark.unit
+def test_reflect_on_final_decision_parses_structured_json():
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value.content = json.dumps(LESSON_SAMPLE)
+    reflector = Reflector(mock_llm)
+    result = reflector.reflect_on_final_decision(
+        final_decision=DECISION_BUY,
+        settled={5: {"raw": -0.02, "alpha": -0.04, "resolution": "2026-01-12"},
+                 21: {"raw": 0.01, "alpha": -0.01, "resolution": "2026-01-29"}},
+        configured=[5, 21, 63, 126],
+    )
+    assert result == render_lesson(LESSON_SAMPLE)
+    assert result.lesson_json == LESSON_SAMPLE
+    mock_llm.invoke.assert_called_once()
+    # The prompt asks for the JSON schema and lists the measured windows.
+    msgs = mock_llm.invoke.call_args[0][0]
+    system, human = msgs[0][1], msgs[1][1]
+    assert "single JSON object" in system and "konfidenz" in system
+    assert "5d:" in human and "21d:" in human
+    assert "not yet measured: 63, 126 days" in human
+
+
+@pytest.mark.unit
+def test_reflect_on_final_decision_prose_fallback_keeps_legacy_behaviour():
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value.content = "Directionally correct. Thesis confirmed."
+    reflector = Reflector(mock_llm)
+    result = reflector.reflect_on_final_decision(
+        final_decision=DECISION_BUY, raw_return=0.042, alpha_return=0.021,
+    )
+    assert result == "Directionally correct. Thesis confirmed."
+    assert result.lesson_json is None
+    mock_llm.invoke.assert_called_once()
+
+
+@pytest.mark.unit
+def test_reflect_on_final_decision_fenced_json_from_llm():
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value.content = "```json\n" + json.dumps(LESSON_SAMPLE) + "\n```"
+    reflector = Reflector(mock_llm)
+    result = reflector.reflect_on_final_decision(
+        final_decision=DECISION_BUY, raw_return=0.042, alpha_return=0.021,
+    )
+    assert result.lesson_json == LESSON_SAMPLE
+    assert str(result) == render_lesson(LESSON_SAMPLE)
+
+
+@pytest.mark.unit
+def test_merge_horizons_stores_reflection_json_block(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    lesson = Lesson(render_lesson(LESSON_SAMPLE), LESSON_SAMPLE)
+    ok = log.merge_horizons(
+        "NVDA", "2026-01-05",
+        {5: (-0.02, -0.04, 5, "2026-01-12"), 21: (0.01, -0.01, 21, "2026-01-29")},
+        reflection=lesson, anchor_days=5, resolution_date="2026-01-12",
+        reflection_covers=[5, 21], reflection_json=LESSON_SAMPLE,
+    )
+    assert ok
+    text = (tmp_path / "trading_memory.md").read_text(encoding="utf-8")
+    assert "REFLECTION_JSON:\n" in text
+    # The JSON line sits directly before the REFLECTION block it belongs to.
+    assert text.index("REFLECTION_JSON:") < text.index("\nREFLECTION:")
+    entries = log.load_entries()
+    assert entries[0]["pending"] is False
+    assert entries[0]["reflection"] == render_lesson(LESSON_SAMPLE)
+    assert entries[0]["reflection_json"] == LESSON_SAMPLE
+    assert entries[0]["reflection_covers"] == [5, 21]
+
+
+@pytest.mark.unit
+def test_merge_horizons_prose_reflection_stores_no_json_block(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    log.merge_horizons(
+        "NVDA", "2026-01-05", {5: (-0.02, -0.04, 5, "2026-01-12")},
+        reflection="Directionally correct.", anchor_days=5,
+        resolution_date="2026-01-12", reflection_covers=[5],
+    )
+    text = (tmp_path / "trading_memory.md").read_text(encoding="utf-8")
+    assert "REFLECTION_JSON" not in text
+    entries = log.load_entries()
+    assert entries[0]["reflection"] == "Directionally correct."
+    assert entries[0]["reflection_json"] is None
+
+
+@pytest.mark.unit
+def test_merge_horizons_preserves_stored_lesson_json(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    lesson = Lesson(render_lesson(LESSON_SAMPLE), LESSON_SAMPLE)
+    log.merge_horizons(
+        "NVDA", "2026-01-05", {5: (-0.02, -0.04, 5, "2026-01-12")},
+        reflection=lesson, anchor_days=5, resolution_date="2026-01-12",
+        reflection_covers=[5], reflection_json=LESSON_SAMPLE,
+    )
+    # A later pass adds a window and rewrites the entry without touching the lesson.
+    log.merge_horizons(
+        "NVDA", "2026-01-05", {21: (0.01, -0.01, 21, "2026-01-29")},
+        reflection=None, anchor_days=None,
+        reflection_covers=None, reflection_json=None,
+    )
+    entries = log.load_entries()
+    assert entries[0]["reflection_json"] == LESSON_SAMPLE
+    assert entries[0]["reflection_covers"] == [5]
+
+
+@pytest.mark.unit
+def test_settle_pending_persists_structured_lesson(tmp_path):
+    log = make_log(tmp_path)
+    log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+    reflector = MagicMock()
+    reflector.reflect_on_final_decision.return_value = Lesson(
+        render_lesson(LESSON_SAMPLE), LESSON_SAMPLE)
+    with patch.object(settlement, "fetch_horizons",
+                      return_value={5: (-0.02, -0.04, 5, "2026-01-12")}):
+        settlement.settle_pending("NVDA", log, reflector, {"evaluation_horizons": [5, 21]})
+    entries = log.load_entries()
+    assert entries[0]["pending"] is False
+    assert entries[0]["reflection"] == render_lesson(LESSON_SAMPLE)
+    assert entries[0]["reflection_json"] == LESSON_SAMPLE
+    assert entries[0]["reflection_covers"] == [5]

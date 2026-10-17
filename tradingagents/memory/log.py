@@ -17,12 +17,16 @@ class TradingMemoryLog:
     # Precompiled patterns — avoids re-compilation on every load_entries() call
     # HORIZONS (multi-horizon outcomes) sits between DECISION and REFLECTION.
     # The DECISION regex must stop before it, otherwise the JSON leaks into the
-    # decision text; REFLECTION is the final section (greedy to end).
-    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\n(?:HORIZONS|REALIZED|REFLECTION_COVERS|REFLECTION):|\Z)", re.DOTALL)
+    # decision text; REFLECTION_JSON (one line) is the machine-readable
+    # lesson, REFLECTION the final section (greedy to end).
+    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\n(?:HORIZONS|REALIZED|REFLECTION_COVERS|REFLECTION_JSON|REFLECTION):|\Z)", re.DOTALL)
     _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*)\Z", re.DOTALL)
     _HORIZONS_RE = re.compile(r"HORIZONS:\n(.*)")
     _REALIZED_RE = re.compile(r"REALIZED:\n(.*)")
     _REFLECTION_COVERS_RE = re.compile(r"REFLECTION_COVERS:\n(.*)")
+    # Machine-readable structured lesson (see memory/reflection.py); stored on
+    # one line right before the REFLECTION block it belongs to.
+    _REFLECTION_JSON_RE = re.compile(r"REFLECTION_JSON:\n([^\n]*)")
 
     def __init__(self, config: dict = None):
         cfg = config or {}
@@ -259,6 +263,7 @@ class TradingMemoryLog:
                        anchor_days: int | None = None,
                        resolution_date: str | None = None,
                        reflection_covers: list[int] | None = None,
+                       reflection_json: dict | None = None,
                        realized: dict | None = None) -> bool:
         """Merge scored horizon outcomes into the (date,ticker) entry.
 
@@ -270,11 +275,13 @@ class TradingMemoryLog:
 
         ``reflection`` (when given) replaces the stored lesson;
         ``reflection_covers`` (when given) records the windows that lesson was
-        written over (None preserves the stored list). ``realized`` (when
-        given) records the real-portfolio realized outcome; None preserves the
-        stored one. Finalisation requires ``anchor_days`` to be passed
-        explicitly (not inferred), so a caller that only adds numbers can never
-        accidentally flip an entry's state.
+        written over (None preserves the stored list). ``reflection_json``
+        (when given) replaces the stored machine-readable structured lesson,
+        stored as a REFLECTION_JSON line before REFLECTION (None preserves the
+        stored one). ``realized`` (when given) records the real-portfolio
+        realized outcome; None preserves the stored one. Finalisation requires
+        ``anchor_days`` to be passed explicitly (not inferred), so a caller
+        that only adds numbers can never accidentally flip an entry's state.
         """
         if not self._log_path or not self._log_path.exists():
             return False
@@ -326,6 +333,9 @@ class TradingMemoryLog:
                 realized_m = self._REALIZED_RE.search(body)
                 realized_val = (realized if realized is not None
                                 else self._parse_realized(realized_m.group(1) if realized_m else None))
+                rjm = self._REFLECTION_JSON_RE.search(body)
+                lesson_json_val = (reflection_json if reflection_json is not None
+                                   else self._parse_lesson_json(rjm.group(1) if rjm else None))
                 new_block = f"{new_tag}\n\nDECISION:\n{decision}"
                 if hz:
                     new_block += ("\n\nHORIZONS:\n"
@@ -334,6 +344,9 @@ class TradingMemoryLog:
                     new_block += "\n\nREALIZED:\n" + json.dumps(realized_val, ensure_ascii=False)
                 if refl and covers:
                     new_block += "\n\nREFLECTION_COVERS:\n" + ", ".join(str(h) for h in sorted(covers))
+                if refl and isinstance(lesson_json_val, dict) and lesson_json_val:
+                    new_block += ("\n\nREFLECTION_JSON:\n"
+                                  + json.dumps(lesson_json_val, ensure_ascii=False, sort_keys=True))
                 if refl:
                     new_block += "\n\nREFLECTION:\n" + refl
                 blocks[i] = new_block
@@ -518,6 +531,17 @@ class TradingMemoryLog:
                 "close_date": data.get("close_date"),
                 "note": data.get("note")}
 
+    @staticmethod
+    def _parse_lesson_json(body: str | None) -> dict | None:
+        """Parse a REFLECTION_JSON line into the structured-lesson dict."""
+        if body is None:
+            return None
+        try:
+            data = json.loads(body.strip())
+        except (ValueError, AttributeError, TypeError):
+            return None
+        return data if isinstance(data, dict) and data else None
+
     def _parse_horizons(self, body: str, legacy: dict) -> dict[int, dict]:
         """Extract the HORIZONS block; for legacy entries (no block) fall back
         to the single anchor horizon implied by the resolved tag."""
@@ -576,6 +600,9 @@ class TradingMemoryLog:
         covers_match = self._REFLECTION_COVERS_RE.search(body)
         entry["reflection_covers"] = self._parse_covers(
             covers_match.group(1) if covers_match else None)
+        rj_match = self._REFLECTION_JSON_RE.search(body)
+        entry["reflection_json"] = self._parse_lesson_json(
+            rj_match.group(1) if rj_match else None)
         realized_match = self._REALIZED_RE.search(body)
         entry["realized"] = self._parse_realized(
             realized_match.group(1) if realized_match else None)

@@ -229,6 +229,7 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                         configured=horizons,
                         benchmark_name=benchmark,
                     )
+                    lesson_json = getattr(reflection, "lesson_json", None)
                 except Exception as exc:
                     # Reflection calls a provider: a transient failure leaves the
                     # entry pending for the next pass rather than stopping the analysis.
@@ -240,6 +241,7 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                     ticker, entry["date"], new, reflection,
                     anchor_days=anchor, resolution_date=anchor_res,
                     reflection_covers=sorted(scored_now),
+                    reflection_json=lesson_json,
                 ):
                     result.settled.append((ticker, entry["date"]))
                 continue
@@ -263,6 +265,7 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
             needs_refresh = bool(set(scored_now) - covers)
             reflection = None
             reflection_ok = True
+            lesson_json = None
             if needs_refresh:
                 try:
                     reflection = reflector.reflect_on_final_decision(
@@ -271,6 +274,7 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                         configured=horizons,
                         benchmark_name=benchmark,
                     )
+                    lesson_json = getattr(reflection, "lesson_json", None)
                 except Exception as exc:
                     logger.warning("Multi-horizon reflection refresh failed for %s on %s: %s", ticker, entry["date"], exc)
                     reflection_ok = False
@@ -281,6 +285,7 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                 ticker, entry["date"], new, reflection,
                 anchor_days=None, resolution_date=anchor_res,
                 reflection_covers=sorted(scored_now) if (needs_refresh and reflection_ok) else None,
+                reflection_json=lesson_json if (needs_refresh and reflection_ok) else None,
             ):
                 result.settled.append((ticker, entry["date"]))
             if needs_refresh and not reflection_ok:
