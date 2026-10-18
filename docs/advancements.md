@@ -97,6 +97,43 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.2] — 2026-10-18
+
+Everything below is relative to upstream v0.7.0.
+
+### Added — single report tree per run (backlog #14)
+
+Upstream v0.7.0 writes a run's artifacts into **two overlapping trees** under
+`results_dir`: the live tree `<ticker>/<date>/` (`message_tool.log`, flat
+stage `.md` files, `TradingAgentsStrategy_logs/full_states_log_*.json`) and
+the final tree `reports/<TICKER>_<stamp>/` (phase folders + complete report).
+This fork adds an opt-in layout that unifies them:
+
+- **`results_layout` config key** (`TRADINGAGENTS_RESULTS_LAYOUT`, default
+  `"shared"` = upstream behavior, unchanged): in the `"run_dir"` layout the
+  results directory already belongs to this one run, so every writer puts its
+  artifacts directly there — live log and full-states log at the top level,
+  all report files in `reports/` (no ticker/date layers, no timestamp stamp).
+- **Three writers honor it** — `_run_directory()` (`cli/run.py`),
+  `default_report_path()` and the state-log path
+  (`tradingagents/graph/trading_graph.py`). Ticker validation still runs even
+  when nothing is appended.
+- **Wrapper switch** (fork-only, Hermes profile): `ta.sh`/`run_analysis.py`
+  now set `TRADINGAGENTS_RESULTS_DIR=~/.tradingagents/reports/trading-scenarios/<TICKER>/<DATE>[-<SUFFIX>]`
+  plus `TRADINGAGENTS_RESULTS_LAYOUT=run_dir`. All app data (memory, portfolio,
+  registry, cache **and** reports) now lives under one root, `~/.tradingagents/`;
+  the profile keeps a symlink `<profile>/reports → ~/.tradingagents/reports`
+  for convenience. Existing runs were moved in place (2026-10-18).
+
+### Testing
+
+- `tests/test_results_layout_run_dir.py` — run-dir layout: `_run_directory`
+  returns the results dir itself, ticker validation still enforced, report path
+  unstamped; shared-layout paths byte-identical to before. Existing
+  path-pinning tests (`test_cli_symbol_handling.py`, e2e) pass unchanged.
+
+---
+
 ## [Fork v1.0.1] — 2026-10-17
 
 Everything below is relative to upstream v0.7.0.

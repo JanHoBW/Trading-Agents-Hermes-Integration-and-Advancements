@@ -288,7 +288,14 @@ class TradingAgentsGraph:
         return write_report_tree(final_state, ticker, save_path, settings=self.run_settings(), html=html)
 
     def default_report_path(self, ticker) -> Path:
-        """Where a run's reports go unless told otherwise: under results_dir, stamped now."""
+        """Where a run's reports go unless told otherwise.
+
+        Shared layout: under results_dir/reports, stamped now so saves never
+        clobber each other. Run-dir layout: the results directory already
+        belongs to this one run, so its reports live in ``reports/`` directly.
+        """
+        if self.config.get("results_layout") == "run_dir":
+            return Path(self.config["results_dir"]) / "reports"
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return Path(self.config["results_dir"]) / "reports" / f"{safe_ticker_component(ticker)}_{stamp}"
 
@@ -508,7 +515,10 @@ class TradingAgentsGraph:
 
         # A ticker that would escape the results directory is rejected.
         safe_ticker = safe_ticker_component(final_state["company_of_interest"])
-        directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
+        if self.config.get("results_layout") == "run_dir":
+            directory = Path(self.config["results_dir"])
+        else:
+            directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
         directory.mkdir(parents=True, exist_ok=True)
 
         log_path = directory / f"full_states_log_{trade_date}.json"

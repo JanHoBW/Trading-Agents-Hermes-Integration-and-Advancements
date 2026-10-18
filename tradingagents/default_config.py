@@ -34,6 +34,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_ANTHROPIC_EFFORT":        "anthropic_effort",
     "TRADINGAGENTS_ISSUER_REGISTRY":          "issuer_registry_path",
     "TRADINGAGENTS_NEWS_SUPPLEMENT":          "news_supplement_path",
+    "TRADINGAGENTS_RESULTS_LAYOUT":           "results_layout",
 }
 
 
@@ -85,6 +86,10 @@ def build_default_config() -> dict:
     """
     return _apply_env_overrides({
         "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR") or os.path.join(_TRADINGAGENTS_HOME, "logs"),
+        # "shared" (default): results_dir holds many runs; each run gets its own
+        # ticker/date layers. "run_dir": the results directory already belongs to
+        # this single run (the wrapper sets it), so artifacts go in directly.
+        "results_layout": "shared",
         "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR") or os.path.join(_TRADINGAGENTS_HOME, "cache"),
         "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH") or os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
         "issuer_registry_path": (

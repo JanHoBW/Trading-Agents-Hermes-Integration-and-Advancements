@@ -37,9 +37,14 @@ def _run_directory(config: dict, ticker: str, trade_date: str) -> Path:
     """Where this run writes, with the ticker validated as a path component.
 
     Every other path that interpolates a ticker checks it first; a value of
-    ".." here would place the run outside the results directory.
+    ".." here would place the run outside the results directory. In the
+    ``run_dir`` layout (TRADINGAGENTS_RESULTS_LAYOUT=run_dir) the results
+    directory already IS this run's directory, so nothing is appended.
     """
-    return Path(config["results_dir"]) / safe_ticker_component(ticker) / trade_date
+    safe_ticker = safe_ticker_component(ticker)  # validates even when unused
+    if config.get("results_layout") == "run_dir":
+        return Path(config["results_dir"])
+    return Path(config["results_dir"]) / safe_ticker / trade_date
 
 
 def _announce_checkpoint_state(graph, ticker: str, trade_date: str) -> None:
