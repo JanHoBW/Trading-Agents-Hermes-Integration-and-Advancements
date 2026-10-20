@@ -97,6 +97,47 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.3] — 2026-10-20
+
+Everything below is relative to upstream v0.7.0.
+
+### Added — generic custom LLM endpoint for unattended runs (wrapper)
+
+The Hermes wrapper previously only knew the built-in profiles
+(`copilot` / `lmstudio` / `webercloud`); any other OpenAI-compatible server
+required editing `run_analysis.py`. Now:
+
+- **`custom` profile** (`run_analysis.py`): `--llm custom --custom-api-url <url>
+  --custom-model <id>` points the whole run at any OpenAI-compatible endpoint.
+  Optional `--custom-api-key-env <NAME>` reads the key from a profile `.env`
+  variable (a remote host without one gets a warning, not a failure). The
+  preflight reachability check covers the custom endpoint like the other profiles.
+- **`ta.sh` shortcuts**: `--api-url=<url> --model=<id>` implies `--llm custom`;
+  both flags are validated (http(s) URL, model charset, set-together rule) and
+  stay mutually exclusive with an explicit `--llm`.
+
+This decouples unattended runs from a specific local server: the same command
+line works against LM Studio on any host, vLLM, or a cloud relay.
+
+### Data — per-ticker Reddit subreddits for RHM.DE
+
+`hardcoded_sources.yaml` (wrapper data) maps `RHM.DE` to r/wallstreetbetsGER and
+r/RHM_Rheinmetall via the fork's per-ticker override seam (`7c37f7d`), so the
+Sentiment Analyst reads German retail discussion for Rheinmetall.
+
+### Notes — prefix-cache baseline (backlog #16, Phase 1)
+
+Measured on the local server (Q4, prefill ≈ 340 tok/s): a full debate prompt
+(~22k tokens) costs ~66 s uncached vs ~13 s with a prefix-cache hit; one byte
+changed early in the prefix destroys the cache. The flat debate prompt is already
+append-only in history, so later rounds reuse most of the prefix — chat-mode
+(#16) would only save the duplicated tail (~20 s per run): not worth it in
+isolation. Bigger lever: keep other consumers (e.g. Hermes chat on the same
+model) off the single-slot server during a run. Details: skill reference
+`memory-improvement-backlog.md`.
+
+---
+
 ## [Fork v1.0.2] — 2026-10-18
 
 Everything below is relative to upstream v0.7.0.
