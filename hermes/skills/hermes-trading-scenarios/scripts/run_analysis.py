@@ -24,6 +24,9 @@ Flags for run (all optional; equals form --flag=value, space form is a hard erro
                          must be combined with --model
   --model M              Model name for --api-url (e.g. unsloth/qwen3.8-27b)
   --portfolio F          JSON with CURRENT holdings + cash (PortfolioContext)
+  --news-window-days N   Headline window (news + sentiment + supplement), default 7
+  --event-window-days N  First-party event-context window, default 180
+  --no-event-context     Do not inject the 180-day first-party block
 
 Pass-through flags (special cases):
   --analysts LIST        Default market,news,fundamentals,social
@@ -69,13 +72,14 @@ REPORT_SUFFIXES = {".md", ".html", ".json", ".txt"}
 VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
                "--debate-rounds", "--risk-rounds", "--timeout", "--lmstudio-model",
                "--weber-model", "--reasoning-effort", "--suffix", "--supplement",
-               "--custom-api-key-env", "--output-dir", "--lmstudio-url", "--weber-url"}
+               "--custom-api-key-env", "--output-dir", "--lmstudio-url", "--weber-url",
+               "--news-window-days", "--event-window-days"}
 
 # --quick profile: the local swift model with a minimal thinking budget, 1/1 rounds.
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.3.1"
+WRAPPER_VERSION = "2.4.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -336,6 +340,11 @@ LLM_CHAIN = ["copilot", "lmstudio", "webercloud"]
 # silent default: it must be enabled explicitly, per run (--allow-copilot) or
 # per environment (TRADINGAGENTS_ALLOW_COPILOT=1).
 ALLOW_COPILOT_ENV = "TRADINGAGENTS_ALLOW_COPILOT"
+# Analysis horizons: the repo reads these from the environment (see
+# _ENV_OVERRIDES in default_config.py), so the wrapper only has to set them.
+NEWS_WINDOW_ENV = "TRADINGAGENTS_NEWS_LOOKBACK_DAYS"
+EVENT_WINDOW_ENV = "TRADINGAGENTS_EVENT_LOOKBACK_DAYS"
+EVENT_CONTEXT_ENV = "TRADINGAGENTS_EVENT_CONTEXT"
 COPILOT_TOS_NOTE = (
     "fork-only endpoint: the Copilot backend uses VSCode client headers against "
     "api.githubcopilot.com (ToS gray zone) — enabled explicitly for this run"
@@ -879,6 +888,13 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     def check(name: str, status: str, detail: str) -> None:
         checks.append({"check": name, "status": status, "detail": detail})
 
+    if getattr(args, "news_window_days", None) or getattr(args, "event_window_days", None):
+        apply_window_args(args)
+    windows = analysis_windows_summary(run_date(args))
+    check("analysis_windows", "ok",
+          f"headline {windows['news_lookback_days']}d, event "
+          + (f"{windows['event_lookback_days']}d" if windows["event_context_enabled"] else "disabled"))
+
     # --- installation ------------------------------------------------------
     try:
         root = find_install_root()
@@ -1016,6 +1032,67 @@ def cmd_news(args: argparse.Namespace) -> None:
     print(news_out)
 
 
+def apply_window_args(a: argparse.Namespace) -> None:
+    """Turn --news-window-days/--event-window-days/--no-event-context into env.
+
+    Children (headless, --bg, --ui) inherit the environment, so one place is
+    enough; the repo folds these into its config at import time.
+    """
+    if getattr(a, "news_window_days", None) is not None:
+        os.environ[NEWS_WINDOW_ENV] = str(a.news_window_days)
+    if getattr(a, "event_window_days", None) is not None:
+        os.environ[EVENT_WINDOW_ENV] = str(a.event_window_days)
+    if getattr(a, "no_event_context", False):
+        os.environ[EVENT_CONTEXT_ENV] = "0"
+
+
+def run_date(a: argparse.Namespace) -> str:
+    """The analysis date of this invocation (today when the flag is absent)."""
+    return getattr(a, "date", None) or dt.date.today().isoformat()
+
+
+def analysis_windows_summary(date_str: str) -> dict:
+    """The horizons this run will use, resolved to dates (for provenance)."""
+    headline = _env_days(NEWS_WINDOW_ENV, 7)
+    event_days = _env_days(EVENT_WINDOW_ENV, 180)
+    enabled = (os.environ.get(EVENT_CONTEXT_ENV, "1").strip().lower()
+               not in ("0", "false", "no", "off"))
+    try:
+        end = dt.date.fromisoformat(date_str)
+    except ValueError:
+        return {"news_lookback_days": headline, "event_lookback_days": event_days,
+                "event_context_enabled": enabled}
+    return {
+        "news_lookback_days": headline,
+        "headline_window": [(end - dt.timedelta(days=headline)).isoformat(), end.isoformat()],
+        "event_context_enabled": enabled,
+        "event_lookback_days": event_days,
+        "event_window": [(end - dt.timedelta(days=event_days)).isoformat(), end.isoformat()],
+    }
+
+
+def _env_days(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 1 else default
+
+
+def positive_days(raw: str) -> int:
+    """argparse type for a lookback window in days (1..730)."""
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"ganze Zahl erwartet, nicht {raw!r}") from None
+    if not 1 <= value <= 730:
+        raise argparse.ArgumentTypeError("Fenster muss zwischen 1 und 730 Tagen liegen")
+    return value
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """`run TICKER [DATE]`: validate, build the news supplement, launch the run."""
     if args.bg and args.ui:
@@ -1025,6 +1102,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     # --bg child (which otherwise loses it).
     if getattr(args, "allow_copilot", False):
         os.environ[ALLOW_COPILOT_ENV] = "1"
+    apply_window_args(args)
 
     ticker = args.ticker  # uppercased + validated by type=ticker
     date = args.date or dt.date.today().isoformat()
@@ -1118,9 +1196,13 @@ def cmd_run(args: argparse.Namespace) -> None:
                           ("--timeout", str(args.timeout)),
                           ("--portfolio", args.portfolio), ("--suffix", args.suffix),
                           ("--output-dir", args.output_dir),
-                          ("--custom-api-key-env", args.custom_api_key_env)):
+                          ("--custom-api-key-env", args.custom_api_key_env),
+                          ("--news-window-days", str(args.news_window_days) if args.news_window_days else None),
+                          ("--event-window-days", str(args.event_window_days) if args.event_window_days else None)):
             if val:
                 child.append(f"{flag}={val}")
+        if getattr(args, "no_event_context", False):
+            child.append("--no-event-context")
         if news_out:
             child.append(f"--supplement={news_out}")
         else:
@@ -1299,6 +1381,7 @@ def execute_run(a: argparse.Namespace) -> None:
             "data_coverage": matrix,
             "data_coverage_source": "report" if matrix else None,
             "prompt_versions": prompts,
+            "analysis_windows": analysis_windows_summary(run_date(a)),
             "replay_id": replay_id(a, prof, prompts, effort),
             "copilot_enabled": _copilot_allowed(),
             "copilot_tos_note": COPILOT_TOS_NOTE if prof == "copilot" else None,
@@ -1371,7 +1454,8 @@ def execute_run(a: argparse.Namespace) -> None:
                         "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
                         "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                         "llm_chain":chain,"attempts":attempts,
-                        "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions":prompts,
+                        "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions": prompts,
+                        "analysis_windows": analysis_windows_summary(run_date(a)),
                         "replay_id":replay_id(a,prof,prompts,effort),
                         "reasoning_effort":effort,
                         "copilot_enabled":_copilot_allowed(),
@@ -1391,7 +1475,8 @@ def execute_run(a: argparse.Namespace) -> None:
                     "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
                     "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                     "llm_chain":chain,"attempts":attempts,
-                    "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions":prompts,
+                    "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions": prompts,
+                        "analysis_windows": analysis_windows_summary(run_date(a)),
                         "replay_id":replay_id(a,prof,prompts,effort),
                         "reasoning_effort":effort,
                         "copilot_enabled":_copilot_allowed(),
@@ -1432,6 +1517,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("date", nargs="?", type=iso_date, default=None, help="Analyse-Datum YYYY-MM-DD (Default: heute)")
     pr.add_argument("--quick", action="store_true",
                     help=f"lokales swift-Modell ({QUICK_LLM_MODEL}), {QUICK_REASONING_EFFORT} effort, 1/1 Runde")
+    pr.add_argument("--news-window-days", type=positive_days, default=None,
+                    help=f"Schlagzeilen-/Sentiment-Fenster in Tagen (Default {7}; Env {NEWS_WINDOW_ENV})")
+    pr.add_argument("--event-window-days", type=positive_days, default=None,
+                    help=f"Event-Kontext-Fenster in Tagen, First-Party (Default 180; Env {EVENT_WINDOW_ENV})")
+    pr.add_argument("--no-event-context", action="store_true",
+                    help="Event-Kontext (180-Tage-Block) nicht in den News-Prompt injizieren")
     pr.add_argument("--no-news", action="store_true", help="News-Pipeline überspringen; vorhandenes Supplement nutzen, wenn vorhanden")
     pr.add_argument("--bg", action="store_true", help="im Hintergrund starten (detached), Log + PID ausgeben")
     pr.add_argument("--ui", action="store_true",
@@ -1479,6 +1570,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Copilot als verfügbar prüfen (sonst meldet der Check 'disabled by feature flag')")
     pdoc.add_argument("--portfolio", default=None, help="Portfolio-JSON mitprüfen")
     pdoc.add_argument("--supplement", default=None, help="News-Supplement mitprüfen")
+    pdoc.add_argument("--news-window-days", type=positive_days, default=None,
+                      help="Schlagzeilen-Fenster, das der Lauf nutzen würde")
+    pdoc.add_argument("--event-window-days", type=positive_days, default=None,
+                      help="Event-Kontext-Fenster, das der Lauf nutzen würde")
+    pdoc.add_argument("--no-event-context", action="store_true",
+                      help="Event-Kontext als aus prüfen")
     pdoc.set_defaults(func=cmd_doctor)
 
     return ap

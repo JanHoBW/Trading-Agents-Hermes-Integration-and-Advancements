@@ -97,6 +97,39 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.11] — 2026-10-21
+
+### Added — two analysis horizons (headline 7 d, first-party event context 180 d)
+
+- `tradingagents/dataflows/windows.py` owns the arithmetic: headline window
+  (`news_lookback_days`, default 7 d) and event window
+  (`event_context_lookback_days`, default 180 d ≈ 126 trading days = the longest
+  settlement horizon), both anchored on `trade_date`, never wall-clock.
+- New `dataflows/event_context.py`: a deterministic block for the news analyst with
+  issuer releases (issuer_ir), UReg capital-market disclosures and UReg PDMR over
+  the event window. Injected into the prompt rather than exposed as a tool, so the
+  model cannot skip it. Missing sources render as explicit `GAP: …` lines; when all
+  three are unconfigured the block collapses to one sentence. UReg output is
+  compacted (8 records / 3 bullets / 220 chars) because those vendors repeat
+  emitter, LEI and ISIN per record.
+- `news_analyst` prompt now names the configured window and tells the model to call
+  `get_news` with exactly those dates (a run can no longer silently widen it).
+  `sentiment_analyst` uses the same helper instead of a hardcoded 7 days.
+- Report: Data Coverage section starts with **Analysis windows** (headline + event,
+  resolved to dates); `provenance.json` gains `analysis_windows`.
+- Wrapper 2.4.0: `--news-window-days=N`, `--event-window-days=N`,
+  `--no-event-context`; env `TRADINGAGENTS_NEWS_LOOKBACK_DAYS`,
+  `TRADINGAGENTS_EVENT_LOOKBACK_DAYS`, `TRADINGAGENTS_EVENT_CONTEXT`; `doctor`
+  reports the horizons it would use; findings flow to `--bg`/`--ui` children.
+- UReg vendors accept `since_date` (optional lower bound; tool calls without it
+  keep the full history) and PDMR now merges DE/EN twin filings (13 merged for RHM
+  over 180 d, German kept) — previously one insider trade appeared twice.
+- `issuer_ir` accepts `limit` / `excerpt_chars` so the event block stays compact
+  (6 releases, 320 chars) while `get_news` keeps the full rendering.
+- Tests: `tests/test_analysis_windows.py` (19) + wrapper
+  `tests/test_run_analysis_windows.py` (9, incl. an equals-form guard for the new
+  value flags); full suite 1659 passed, 1 skipped.
+
 ## [Fork v1.0.10] — 2026-10-21
 
 ### Added — first-party issuer releases via sitemap discovery (`issuer_ir`)

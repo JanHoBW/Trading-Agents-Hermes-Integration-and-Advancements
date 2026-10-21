@@ -6,7 +6,7 @@ CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless / API
 run produces the same on-disk report tree a CLI run does.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from tradingagents.agents.rating import run_rating
@@ -74,6 +74,28 @@ _SECTIONS = (
 )
 
 
+def _window_lines(trade_date) -> list[str]:
+    """The two horizons this run actually used, spelled out for the report."""
+    if not trade_date:
+        return []
+    from tradingagents.dataflows import windows
+
+    try:
+        start, end = windows.headline_window(str(trade_date))
+        days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+        lines = [f"Headline window: {start} → {end} ({days} days) — news, sentiment, supplement"]
+        if windows.event_context_enabled():
+            estart, eend = windows.event_window(str(trade_date))
+            edays = (date.fromisoformat(eend) - date.fromisoformat(estart)).days
+            lines.append(f"Event context: {estart} → {eend} ({edays} days) — first-party releases, "
+                         f"capital-market disclosures, insider filings")
+        else:
+            lines.append("Event context: disabled (event_context_enabled=false)")
+    except ValueError:
+        return []
+    return lines
+
+
 def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str, str]]]]:
     """The sections with something to say: (heading, folder, [(agent, file, text)])."""
     parts = []
@@ -90,7 +112,9 @@ def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str
     # Data coverage last: the gaps belong next to the decision, but after the
     # analysis they qualify. Only present when the routing layer recorded calls.
     coverage_text = coverage.render_markdown(
-        final_state.get("data_coverage") or {}, final_state.get("asset_type")
+        final_state.get("data_coverage") or {},
+        final_state.get("asset_type"),
+        _window_lines(final_state.get("trade_date")),
     )
     if coverage_text:
         parts.append(("VI. Data Coverage", "6_coverage",

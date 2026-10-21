@@ -17,7 +17,7 @@ supports it and free text otherwise, so the band, score and confidence header
 reads the same across providers.
 """
 
-from datetime import datetime, timedelta
+
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -30,6 +30,7 @@ from tradingagents.agents.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.dataflows import windows
 from tradingagents.agents.tools import get_news
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
@@ -38,10 +39,6 @@ from tradingagents.dataflows.vendors.reddit import (
     subreddits_for,
 )
 from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
-
-
-def _seven_days_back(trade_date: str) -> str:
-    return (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
 def create_sentiment_analyst(llm):
@@ -57,7 +54,7 @@ def create_sentiment_analyst(llm):
     def sentiment_analyst_node(state):
         ticker = state["company_of_interest"]
         end_date = state["trade_date"]
-        start_date = _seven_days_back(end_date)
+        start_date, end_date = windows.headline_window(end_date)
         instrument_context = get_instrument_context_from_state(state)
 
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
@@ -148,7 +145,7 @@ def _build_system_message(
 
 ## Data sources (pre-fetched, in this prompt)
 
-### News headlines — Yahoo Finance, past 7 days
+### News headlines — Yahoo Finance, {start_date} to {end_date}
 Institutional framing. Fact-driven, slower-moving signal.
 
 <start_of_news>
@@ -162,7 +159,7 @@ Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish /
 {stocktwits_block}
 <end_of_stocktwits>
 
-### Reddit posts — {", ".join(f"r/{sub}" for sub in subreddits)} (past 7 days)
+### Reddit posts — {", ".join(f"r/{sub}" for sub in subreddits)} ({start_date} to {end_date})
 Community discussion, without vote or comment counts. Subreddit character matters ({character}).
 
 <start_of_reddit>

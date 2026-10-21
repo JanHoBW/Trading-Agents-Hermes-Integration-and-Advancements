@@ -20,6 +20,12 @@ def test_get_news_takes_the_window_not_a_query():
 
 @pytest.mark.unit
 def test_news_prompt_matches_get_news_signature():
+    """The prompt advertises the window kwargs and names the exact dates.
+
+    It now spells the configured window out (``start_date='…'``) instead of only
+    the parameter names, so that a run cannot silently widen the horizon — the
+    guard stays on the two-keyword shape, not on the exact values.
+    """
     src = inspect.getsource(na)
-    assert "get_news(start_date, end_date)" in src
+    assert "get_news(start_date=" in src and "end_date=" in src
     assert "get_news(query" not in src

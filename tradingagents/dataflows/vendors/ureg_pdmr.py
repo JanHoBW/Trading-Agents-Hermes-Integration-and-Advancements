@@ -448,9 +448,16 @@ def _search(query_name: str, wanted: set[int] | None = None) -> list[dict]:
 # Vendor entry point
 # ---------------------------------------------------------------------------
 
-def get_ureg_pdmr_insider_transactions(ticker: str, as_of_date: str | None = None) -> str:
+def get_ureg_pdmr_insider_transactions(
+    ticker: str,
+    as_of_date: str | None = None,
+    since_date: str | None = None,
+) -> str:
     """German PDMR (Art. 19 MAR) insider disclosures for a registry-listed
-    issuer, with point-in-time filtering on the disclosure date."""
+    issuer, with point-in-time filtering on the disclosure date.
+
+    ``since_date`` is an optional lower bound: the event context asks for the last
+    N days, while the tool call without it keeps returning the full history."""
     instrument = _load_instrument(ticker)
     query_name: str = instrument["ureg_query_name"]
     entity_name: str = instrument["ureg_entity_name"]
@@ -472,13 +479,26 @@ def get_ureg_pdmr_insider_transactions(ticker: str, as_of_date: str | None = Non
         except ValueError:
             as_of = None
 
-    if as_of:
+    since = None
+    if since_date:
+        try:
+            since = date.fromisoformat(since_date)
+        except ValueError:
+            since = None
+
+    if as_of or since:
         window = [
             r for r in mine
-            if r["disclosure_date"] and r["disclosure_date"] <= as_of.isoformat()
+            if r["disclosure_date"]
+            and (as_of is None or r["disclosure_date"] <= as_of.isoformat())
+            and (since is None or r["disclosure_date"] >= since.isoformat())
         ]
     else:
         window = mine
+
+    # The register publishes every PDMR filing in German and English under the same
+    # (date, type, issuer) key; without merging, one insider trade appears twice.
+    window, merged = _merge_translations(window)
 
     if not window:
         if mine:
@@ -526,8 +546,15 @@ def get_ureg_pdmr_insider_transactions(ticker: str, as_of_date: str | None = Non
     ]
     if dropped:
         lines.append(f"# {dropped} row(s) of other matched companies excluded by entity validation.")
-    if as_of:
+    if merged:
+        lines.append(f"# {merged} German/English twin filing(s) merged (German kept).")
+    if since and as_of:
+        lines.append(f"filtered to disclosures between {since.isoformat()} and "
+                     f"{as_of.isoformat()} (point-in-time)")
+    elif as_of:
         lines.append(f"filtered to disclosures on or before {as_of.isoformat()} (point-in-time)")
+    elif since:
+        lines.append(f"filtered to disclosures on or after {since.isoformat()}")
     for d in details:
         person = d.get("person") or "(unknown person)"
         pos = d.get("position") or ""
@@ -612,6 +639,7 @@ def get_ureg_capital_market_disclosures(
     ticker: str,
     as_of_date: str | None = None,
     categories: list[str] | None = None,
+    since_date: str | None = None,
 ) -> str:
     """German capital-market disclosures (ad-hoc, voting rights, capital
     measures) for a registry-listed issuer, point-in-time on the disclosure date.
@@ -650,8 +678,17 @@ def get_ureg_capital_market_disclosures(
             as_of = date.fromisoformat(as_of_date)
         except ValueError:
             as_of = None
+    since = None
+    if since_date:
+        try:
+            since = date.fromisoformat(since_date)
+        except ValueError:
+            since = None
+
     window = [r for r in mine
-              if r["disclosure_date"] and (as_of is None or r["disclosure_date"] <= as_of.isoformat())]
+              if r["disclosure_date"]
+              and (as_of is None or r["disclosure_date"] <= as_of.isoformat())
+              and (since is None or r["disclosure_date"] >= since.isoformat())]
     window, merged = _merge_translations(window)
     window = window[:CAPITAL_MARKET_MAX_RECORDS]
 
@@ -672,8 +709,13 @@ def get_ureg_capital_market_disclosures(
         header.append(f"# {dropped} row(s) of other matched companies excluded by entity validation.")
     if merged:
         header.append(f"# {merged} German/English twin row(s) merged (German filing kept).")
-    if as_of:
+    if since and as_of:
+        header.append(f"# filtered to disclosures between {since.isoformat()} and "
+                      f"{as_of.isoformat()} (point-in-time)")
+    elif as_of:
         header.append(f"# filtered to disclosures on or before {as_of.isoformat()} (point-in-time)")
+    elif since:
+        header.append(f"# filtered to disclosures on or after {since.isoformat()}")
 
     if not window:
         if mine:

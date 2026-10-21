@@ -24,6 +24,30 @@ Pitfall: the fork delta alone only shows fork additions; base capabilities live 
 7. **Position book for the decision agents (`--portfolio` JSON, upstream).** `tradingagents/portfolio.py` defines `PortfolioContext {cash, currency, positions[{ticker, quantity, average_price}]}`; the upstream CLI's `--portfolio <file.json>` feeds it to `propagate(..., portfolio=...)` so trader, risk debaters and the portfolio manager size against the user's ACTUAL positions. It is a different object from the fork's `~/.tradingagents/portfolio.csv` (closed trades → memory settlement/calibration): JSON = current book for decisioning, CSV = history for the memory loop; both can be in use at once. Known gap: the Hermes wrapper `run_analysis.py` passes no portfolio, so every run currently decides as if the user held nothing — worth a wrapper flag when the user holds the ticker under analysis.
 8. **Issuer registry — root cause of `get_news` `issuer_rss not_configured` degradations.** The `issuer_rss` vendor (head of the get_news chain) requires an https `news_feed_url` in the registry entry (`~/.tradingagents/german_equities.json`, shape `{schema_version: 1, instruments: {TICKER: {issuer, isin, wkn, ticker, mic, currency, yahoo_symbol, alpha_vantage_symbol, official_ir_url, news_feed_url, aliases[], ureg_query_name, ureg_entity_name, ureg_pdmr, ir{enabled, terms_checked, sitemap, url_patterns}}}`); `null` → clean degradation to the next vendor, and the run logs it as degraded. The registry holds 19 German large-caps (RHM.DE included, with the keyless Unternehmensregister PDMR fields); RHM's `news_feed_url` is `null` because the issuer publishes no public RSS (Nuxt SPA, all feed-candidate URLs 404) — check the registry entry before debugging the vendor for a missing news chain, and when a first-party feed ever appears, setting that one JSON field is the whole fix (no code change).
 
+## Analysis windows — what the run actually looks at
+
+Two horizons, deliberately different (`tradingagents/dataflows/windows.py`, config
+keys `news_lookback_days` / `event_context_lookback_days`, env
+`TRADINGAGENTS_NEWS_LOOKBACK_DAYS` / `TRADINGAGENTS_EVENT_LOOKBACK_DAYS`):
+
+| Horizon | Default | Feeds | Config/env |
+|---|---|---|---|
+| Headline | 7 d | ticker `get_news`, sentiment (Reddit/StockTwits/headlines), news supplement (`--window-days`) | `news_lookback_days`, `TRADINGAGENTS_NEWS_LOOKBACK_DAYS`, `--news-window-days` |
+| Event context | 180 d (~126 trading days) | first-party only: issuer releases (`issuer_ir`), UReg capital-market disclosures, UReg PDMR | `event_context_lookback_days`, `TRADINGAGENTS_EVENT_LOOKBACK_DAYS`, `--event-window-days`, `--no-event-context` |
+| Macro (FRED) | 365 d | `get_macro_indicators` default | tool argument |
+| Prices/technicals | LLM-chosen range, loader holds 5 y | `get_stock_data`, indicators (30 d trailing default, SMA200 needs ~200 bars) | tool arguments |
+| Fundamentals | quarterly series (Yahoo ~5 quarters) + live profile | statements/tools | tool arguments |
+| Insider/regulatory | full history up to `as_of` (caps: PDMR 40, capital 12) | UReg tools | — |
+| Settlement | 5/21/63/126 trading days | outcome measurement, not input | `HORIZONS` |
+
+Why two: the recommendation horizon (3–6 months) and the settlement horizons
+(21/63/126 trading days) are far longer than a week of headlines. The event block
+therefore covers ~180 calendar days — the longest horizon the run is later scored
+against — while the headline block stays narrow to keep the prompt about *now*.
+An absent source renders as `GAP: …`, never as "nothing happened". The report's
+Data Coverage section prints both windows (`**Analysis windows**`), and
+`provenance.json` records them as `analysis_windows`.
+
 ## Backtesting — native engine plus tiers
 
 The framework HAS a backtest engine (upstream base, present in the tree; CLI `--help` verified): `tradingagents/backtest.py` + the `tradingagents backtest` subcommand of the repo's typer app:

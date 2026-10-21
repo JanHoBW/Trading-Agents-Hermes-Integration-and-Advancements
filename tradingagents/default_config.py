@@ -34,6 +34,9 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_ANTHROPIC_EFFORT":        "anthropic_effort",
     "TRADINGAGENTS_ISSUER_REGISTRY":          "issuer_registry_path",
     "TRADINGAGENTS_NEWS_SUPPLEMENT":          "news_supplement_path",
+    "TRADINGAGENTS_NEWS_LOOKBACK_DAYS":       "news_lookback_days",
+    "TRADINGAGENTS_EVENT_LOOKBACK_DAYS":      "event_context_lookback_days",
+    "TRADINGAGENTS_EVENT_CONTEXT":            "event_context_enabled",
     "TRADINGAGENTS_RESULTS_LAYOUT":           "results_layout",
 }
 
@@ -172,6 +175,13 @@ def build_default_config() -> dict:
         "news_article_limit": 20,             # max articles per ticker (ticker-news)
         "global_news_article_limit": 10,      # max articles for global/macro news
         "global_news_lookback_days": 7,       # macro news lookback window
+        # Two horizons, deliberately different: headlines answer "what is
+        # happening now", first-party events answer "what shaped this thesis".
+        # 180 calendar days ~= 126 trading days, the longest settlement horizon,
+        # so the event context covers exactly what the run is later scored on.
+        "news_lookback_days": 7,              # headline window (news + sentiment)
+        "event_context_enabled": True,        # inject first-party event context
+        "event_context_lookback_days": 180,   # first-party event window
         # Search queries used by get_global_news for macro headlines. Extend or
         # replace to broaden geographic / sector coverage.
         "global_news_queries": [

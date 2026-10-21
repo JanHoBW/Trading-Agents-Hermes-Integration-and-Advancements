@@ -168,7 +168,7 @@ def test_reddit_empty_feed_for_an_old_window_is_unavailable(monkeypatch):
 def test_reddit_live_empty_feed_is_a_real_absence(monkeypatch):
     monkeypatch.setattr(reddit, "_fetch_subreddit_rss", lambda *a, **k: [])
     out = reddit.fetch_reddit_posts("AAPL", subreddits=("stocks",))
-    assert "no reddit posts" in out.lower() and "past 7 days" in out
+    assert "no reddit posts" in out.lower() and "recent past" in out
     assert "unavailable" not in out
 
 

@@ -353,7 +353,7 @@ def fetch_reddit_posts(
             _coverage_dates(fetched), start_date, end_date,
             "Reddit search", f"discussion of {mention}",
         )
-        period = f"within {start_date}..{end_date}" if window else "in the past 7 days"
+        period = f"within {start_date}..{end_date}" if window else "in the recent past"
         return gap or f"<no Reddit posts found mentioning {mention} across {label} {period}>"
 
     def sub_of(p):

@@ -171,8 +171,12 @@ def render_context(snap: dict, asset_type: str | None = None, max_lines: int = 1
     return "\n".join(lines)
 
 
-def render_markdown(snap: dict, asset_type: str | None = None) -> str:
-    """The report section: a per-method table plus the concrete gaps."""
+def render_markdown(
+    snap: dict,
+    asset_type: str | None = None,
+    window_lines: list[str] | None = None,
+) -> str:
+    """The report section: input windows, a per-method table, the concrete gaps."""
     methods = (snap or {}).get("methods") or {}
     if not methods:
         return ""
@@ -196,9 +200,10 @@ def render_markdown(snap: dict, asset_type: str | None = None) -> str:
         "absent was not requested by an analyst this run, and is not reported as "
         "a data failure.",
         "",
-        "\n".join(rows),
-        "",
     ]
+    if window_lines:
+        out += ["**Analysis windows**", ""] + [f"- {line}" for line in window_lines] + [""]
+    out += ["\n".join(rows), ""]
     gaps = (snap or {}).get("gaps") or []
     if gaps:
         out.append("**Gaps**")

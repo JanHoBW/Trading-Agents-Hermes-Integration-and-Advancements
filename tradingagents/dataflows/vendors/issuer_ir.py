@@ -268,7 +268,14 @@ def _ir_config(instrument: dict, ticker: str) -> dict:
             "terms_checked": str(ir["terms_checked"]).strip()}
 
 
-def get_news_issuer_ir(ticker: str, start_date: str, end_date: str) -> str:
+def get_news_issuer_ir(
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    *,
+    limit: int | None = None,
+    excerpt_chars: int | None = None,
+) -> str:
     """Dated releases from the issuer's own site within [start_date, end_date].
 
     Terminal for the chain on success (including a verified empty window), like
@@ -295,7 +302,10 @@ def get_news_issuer_ir(ticker: str, start_date: str, end_date: str) -> str:
             f"release path for this user agent"
         )
 
-    limit = max(1, min(MAX_ARTICLE_FETCHES, int(get_config().get("news_article_limit", 20))))
+    if limit is None:
+        limit = min(MAX_ARTICLE_FETCHES, int(get_config().get("news_article_limit", 20)))
+    limit = max(1, int(limit))
+    width = ARTICLE_TEXT_CHARS if excerpt_chars is None else max(80, int(excerpt_chars))
     header = [
         f"## Official issuer site: {instrument.get('issuer', ticker)} ({ticker})",
         f"- Source: issuer's own sitemap and release pages — {cfg['sitemap']}",
@@ -338,7 +348,7 @@ def get_news_issuer_ir(ticker: str, start_date: str, end_date: str) -> str:
         heading = title or slug_title or "(untitled release)"
         lines.append(f"### {entry['date']} — {heading}")
         lines.append(f"- URL: {entry['url']}")
-        body = excerpt(text)
+        body = excerpt(text, width)
         if body:
             lines.append(body)
         lines.append("")
