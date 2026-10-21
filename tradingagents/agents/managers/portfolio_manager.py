@@ -18,6 +18,7 @@ from tradingagents.agents.context import (
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
+from tradingagents.dataflows import coverage
 
 
 def create_portfolio_manager(llm):
@@ -38,6 +39,9 @@ def create_portfolio_manager(llm):
             if past_context
             else ""
         )
+        coverage_snap = coverage.snapshot()
+        coverage_block = coverage.render_context(coverage_snap, state.get("asset_type"))
+        coverage_section = f"\n{coverage_block}\n" if coverage_block else ""
 
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
@@ -57,7 +61,7 @@ def create_portfolio_manager(llm):
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
-{lessons_line}
+{lessons_line}{coverage_section}
 **Risk Analysts Debate History:**
 {history}
 
@@ -101,6 +105,9 @@ Write these sections, in this order, starting with the rating on its own line:
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
             "final_rating": final_rating,
+            # The routing layer's own record, carried into the report so the
+            # gaps sit next to the conclusion instead of only in a sidecar log.
+            "data_coverage": coverage_snap,
         }
 
     return portfolio_manager_node

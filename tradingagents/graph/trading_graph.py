@@ -10,6 +10,7 @@ from typing import Any
 import tradingagents
 from tradingagents.agents.context import build_instrument_context, resolve_instrument_identity
 from tradingagents.agents.rating import run_rating
+from tradingagents.dataflows import coverage
 from tradingagents.dataflows.config import run_config, run_config_context, set_config
 from tradingagents.dataflows.date_window import get_current_date, is_historical
 from tradingagents.dataflows.symbols import safe_ticker_component
@@ -285,7 +286,16 @@ class TradingAgentsGraph:
         """
         if save_path is None:
             save_path = self.default_report_path(ticker)
-        return write_report_tree(final_state, ticker, save_path, settings=self.run_settings(), html=html)
+        saved = write_report_tree(final_state, ticker, save_path,
+                                  settings=self.run_settings(), html=html)
+        # Machine-readable twin of the report's Data Coverage section: the
+        # wrapper and any post-run audit read this instead of re-parsing prose.
+        snapshot = final_state.get("data_coverage") or {}
+        if snapshot.get("methods"):
+            (Path(saved).parent / "data_coverage.json").write_text(
+                json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        return saved
 
     def default_report_path(self, ticker) -> Path:
         """Where a run's reports go unless told otherwise.
@@ -306,6 +316,10 @@ class TradingAgentsGraph:
         memory log's lessons are not here: the graph's Memory Log step settles
         and loads them alongside the analysts (see ``_memory_step``).
         """
+        # One run per process: start the data-coverage record now so every
+        # vendor call this run makes is attributed to it and nothing leaks in
+        # from an earlier backtest iteration.
+        coverage.reset()
         return self.propagator.create_initial_state(
             company_name,
             trade_date,

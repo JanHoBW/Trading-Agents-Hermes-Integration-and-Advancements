@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tradingagents.agents.rating import run_rating
+from tradingagents.dataflows import coverage
 
 
 def analyst_names(keys) -> list[str]:
@@ -86,6 +87,14 @@ def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str
                 written.append((agent, filename, value))
         if written:
             parts.append((heading, folder, written))
+    # Data coverage last: the gaps belong next to the decision, but after the
+    # analysis they qualify. Only present when the routing layer recorded calls.
+    coverage_text = coverage.render_markdown(
+        final_state.get("data_coverage") or {}, final_state.get("asset_type")
+    )
+    if coverage_text:
+        parts.append(("VI. Data Coverage", "6_coverage",
+                      [("Data Coverage", "coverage.md", coverage_text)]))
     return parts
 
 

@@ -1,5 +1,6 @@
 import logging
 
+from tradingagents.dataflows import coverage
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import (
     NoMarketDataError,
@@ -259,19 +260,24 @@ def route_to_vendor(method: str, *args, **kwargs):
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+            coverage.record(method, vendor, coverage.OK)
+            return result
         except VendorUnavailableError as e:
             logger.warning("Vendor %r unavailable for %s: %s; trying next vendor.", vendor, method, e)
+            coverage.record(method, vendor, coverage.UNAVAILABLE, str(e))
             # Kept so an all-unavailable chain can say the vendor was the
             # problem, rather than reporting nothing about the symbol.
             last_unavailable = e
             continue
         except VendorNotConfiguredError as e:
             logger.warning("Vendor %r not configured for %s; trying next vendor.", vendor, method)
+            coverage.record(method, vendor, coverage.NOT_CONFIGURED)
             if first_error is None:
                 first_error = e  # Surface it if no other vendor can serve the call.
             continue
         except NoMarketDataError as e:
+            coverage.record(method, vendor, coverage.NO_DATA, e.detail or "")
             last_no_data = e  # No data here; another configured vendor may have it
             continue
         except Exception as e:
@@ -279,6 +285,7 @@ def route_to_vendor(method: str, *args, **kwargs):
             # serve it, but never swallow silently: a broken primary must be
             # visible in the logs (#989), not hidden behind a fallback's verdict.
             logger.warning("Vendor %r failed for %s: %s", vendor, method, e)
+            coverage.record(method, vendor, coverage.FAILED, f"{type(e).__name__}: {e}")
             if first_error is None:
                 first_error = e
             failed = e
