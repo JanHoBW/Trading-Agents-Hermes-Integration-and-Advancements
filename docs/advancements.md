@@ -97,6 +97,18 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.8] — 2026-10-21
+
+### Fixed — reasoning effort is part of the run record
+
+- `provenance.json` now records `reasoning_effort` (the value the child actually
+  receives; `provider-default` when nothing is pinned), and `replay_id` includes
+  it. Before this, two runs that differed only in effort produced the same
+  `replay_id` and no provenance field distinguished them — discovered while
+  comparing the 06:12 and 10:50 RHM.DE runs, where neither report could say
+  which effort it had used.
+- Wrapper 2.3.1.
+
 ## [Fork v1.0.7] — 2026-10-21
 
 The three follow-ups from the review: the log learns what the human actually did,

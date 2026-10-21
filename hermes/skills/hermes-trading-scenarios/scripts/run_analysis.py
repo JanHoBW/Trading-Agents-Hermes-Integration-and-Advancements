@@ -75,7 +75,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.3.0"
+WRAPPER_VERSION = "2.3.1"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -191,18 +191,29 @@ def prompt_versions(root: Path) -> dict[str, str]:
             for f in sorted(base.rglob("*.py")) if "__pycache__" not in f.parts}
 
 
-def replay_id(a, profile: str, prompts: dict[str, str]) -> str:
+def effective_effort(env: dict[str, str]) -> str:
+    """The reasoning effort the child actually receives (``provider-default`` if unset).
+
+    Recorded with the run: two runs that differ only in effort were
+    indistinguishable in provenance and in the replay id, which made "which run
+    was xhigh?" unanswerable after the fact.
+    """
+    value = (env.get("TRADINGAGENTS_OPENAI_REASONING_EFFORT") or "").strip()
+    return value or "provider-default"
+
+
+def replay_id(a, profile: str, prompts: dict[str, str], effort: str = "provider-default") -> str:
     """A short digest of everything that decides what this run should produce.
 
-    Inputs + rounds + backend/model + prompt hashes: two runs with the same id
-    made the same decisions from the same evidence, which is what makes a report
-    auditable and a re-run reproducible.
+    Inputs + rounds + backend/model + reasoning effort + prompt hashes: two runs
+    with the same id made the same decisions from the same evidence, which is
+    what makes a report auditable and a re-run reproducible.
     """
     parts = {
         "ticker": a.ticker, "date": a.date,
         "analysts": a.analysts.split(",") if isinstance(a.analysts, str) else list(a.analysts),
         "debate_rounds": a.debate_rounds, "risk_rounds": a.risk_rounds,
-        "llm_profile": profile, "prompts": prompts,
+        "llm_profile": profile, "reasoning_effort": effort, "prompts": prompts,
     }
     payload = json.dumps(parts, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
@@ -1211,6 +1222,7 @@ def execute_run(a: argparse.Namespace) -> None:
         llm_defaults = _resolve_profile(prof)
         env = build_child_env(out, prof, llm_defaults,
                               a.debate_rounds, a.risk_rounds, a.news_supplement)
+        effort = effective_effort(env)
         cmd = discover_command(root) + ["--ticker", a.ticker, "--date", a.date,
                                         "--analysts", a.analysts,
                                         "--save", "--show", "--html"]
@@ -1279,6 +1291,7 @@ def execute_run(a: argparse.Namespace) -> None:
             "news_supplement": a.news_supplement,
             "llm_profile": prof,
             "llm_model": llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
+            "reasoning_effort": effort,
             "llm_backend_url": llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
             "llm_chain": [prof],
             "command": cmd,
@@ -1286,7 +1299,7 @@ def execute_run(a: argparse.Namespace) -> None:
             "data_coverage": matrix,
             "data_coverage_source": "report" if matrix else None,
             "prompt_versions": prompts,
-            "replay_id": replay_id(a, prof, prompts),
+            "replay_id": replay_id(a, prof, prompts, effort),
             "copilot_enabled": _copilot_allowed(),
             "copilot_tos_note": COPILOT_TOS_NOTE if prof == "copilot" else None,
             "console_output": "tty (--ui); no tradingagents.log — see the saved report tree",
@@ -1307,6 +1320,7 @@ def execute_run(a: argparse.Namespace) -> None:
         llm_defaults = _resolve_profile(prof)
         env = build_child_env(out, prof, llm_defaults,
                               a.debate_rounds, a.risk_rounds, a.news_supplement)
+        effort = effective_effort(env)
         started = time.time()
         timed_out = False
         try:
@@ -1358,7 +1372,8 @@ def execute_run(a: argparse.Namespace) -> None:
                         "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                         "llm_chain":chain,"attempts":attempts,
                         "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions":prompts,
-                        "replay_id":replay_id(a,prof,prompts),
+                        "replay_id":replay_id(a,prof,prompts,effort),
+                        "reasoning_effort":effort,
                         "copilot_enabled":_copilot_allowed(),
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
             prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")
@@ -1377,7 +1392,8 @@ def execute_run(a: argparse.Namespace) -> None:
                     "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                     "llm_chain":chain,"attempts":attempts,
                     "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions":prompts,
-                        "replay_id":replay_id(a,prof,prompts),
+                        "replay_id":replay_id(a,prof,prompts,effort),
+                        "reasoning_effort":effort,
                         "copilot_enabled":_copilot_allowed(),
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
         prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")

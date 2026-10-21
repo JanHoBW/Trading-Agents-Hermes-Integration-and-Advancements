@@ -81,6 +81,24 @@ class ReplayIdTests(unittest.TestCase):
         self.assertNotEqual(base, run_analysis.replay_id(_args(risk_rounds=1), "lmstudio", prompts))
         self.assertNotEqual(base, run_analysis.replay_id(_args(date="2026-10-20"), "lmstudio", prompts))
 
+    def test_reasoning_effort_is_part_of_the_id(self):
+        # Two runs that differ only in effort must not look identical afterwards.
+        prompts = {"p": "a" * 64}
+        base = run_analysis.replay_id(_args(), "custom", prompts)
+        self.assertNotEqual(base, run_analysis.replay_id(_args(), "custom", prompts, "xhigh"))
+        self.assertNotEqual(base, run_analysis.replay_id(_args(), "custom", prompts, "low"))
+
+
+class EffectiveEffortTests(unittest.TestCase):
+    def test_reads_the_value_the_child_receives(self):
+        self.assertEqual(run_analysis.effective_effort(
+            {"TRADINGAGENTS_OPENAI_REASONING_EFFORT": "xhigh"}), "xhigh")
+
+    def test_unset_or_blank_is_provider_default(self):
+        self.assertEqual(run_analysis.effective_effort({}), "provider-default")
+        self.assertEqual(run_analysis.effective_effort(
+            {"TRADINGAGENTS_OPENAI_REASONING_EFFORT": "   "}), "provider-default")
+
 
 if __name__ == "__main__":
     unittest.main()
