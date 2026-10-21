@@ -8,6 +8,8 @@ Usage:
                                              low effort, 1/1 round (~30-90 min)
   run_analysis.py news TICKER [DATE]         Build only the news supplement
                                              (news_collect.py: dpa + gnews + de_feeds/Foren, merged)
+  run_analysis.py doctor [TICKER] [DATE]     Pre-flight for unattended runs; exit 0 ok,
+                                             3 degraded, 4 blocked
 
 Flags for run (all optional; equals form --flag=value, space form is a hard error):
   --quick                Local swift model, low effort, 1/1 round (defaults)
@@ -71,7 +73,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.0.0"
+WRAPPER_VERSION = "2.1.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -577,6 +579,11 @@ def build_data_coverage(log_text: str) -> dict:
     ``status`` is ``"ok"`` (no vendor skipped for that method) or
     ``"degraded"`` (one or more configured vendors were skipped/failed; another
     may still have served the call). The precise detail lives in ``skips``.
+
+    This is the log-derived view, kept for runs whose child produced no report
+    tree. When the run wrote ``data_coverage.json`` next to its report, that
+    matrix (from the routing layer itself) is authoritative — see
+    ``read_coverage_matrix``.
     """
     methods: dict[str, dict] = {}
     flags: dict[str, bool] = {
@@ -611,6 +618,50 @@ def build_data_coverage(log_text: str) -> dict:
     for rec in methods.values():
         rec["status"] = "degraded" if rec["skips"] else "ok"
     return {"methods": dict(sorted(methods.items())), "flags": flags}
+
+
+def read_coverage_matrix(out: Path) -> dict | None:
+    """The run's own coverage matrix (``data_coverage.json``), newest wins.
+
+    Written by the repo's report writer from the routing layer's records, so it
+    exists in both the headless and the ``--ui`` path — unlike the log-derived
+    view, which needs captured stdout. Returns ``None`` when the run wrote none.
+    """
+    candidates = sorted(
+        (p for p in out.rglob("data_coverage.json") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("methods"):
+            data["source_path"] = str(path)
+            return data
+    return None
+
+
+def report_files(out: Path) -> list[dict]:
+    """Every saved report artifact with its size and hash."""
+    files = []
+    for p in sorted(out.rglob("*")):
+        if p.is_file() and p.suffix.lower() in REPORT_SUFFIXES:
+            files.append({"path": str(p), "sha256": sha256(p), "bytes": p.stat().st_size})
+    return files
+
+
+def write_provenance(out: Path, payload: dict) -> Path:
+    """Write ``provenance.json`` into the run dir (mode 600: it names endpoints)."""
+    prov = out / "provenance.json"
+    prov.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        prov.chmod(0o600)
+    except OSError:
+        pass
+    return prov
+
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +739,204 @@ def default_output_dir(ticker: str, date: str, suffix: str | None) -> Path:
     """~/.tradingagents/reports/trading-scenarios/<TICKER>/<DATE>[-<SUFFIX>] (ta.sh layout)."""
     date_dir = f"{date}-{suffix}" if suffix else date
     return safe_dir(str(Path.home() / ".tradingagents" / "reports" / "trading-scenarios" / ticker / date_dir))
+
+
+# ---------------------------------------------------------------------------
+# doctor: unattended pre-flight
+#
+# What breaks a long unattended run is almost never the model — it is a missing
+# benchmark entry, an invalid registry, an unwritable memory log, a portfolio
+# file with the wrong shape. Each is cheap to check and expensive to discover
+# after two hours. Exit codes: 0 ok, 3 degraded (runs, with a caveat),
+# 4 blocked (do not start).
+# ---------------------------------------------------------------------------
+DOCTOR_EXIT = {"ok": 0, "degraded": 3, "blocked": 4}
+
+# Facts only the installed package can answer. One child process, one JSON line:
+# no import of the repo into this wrapper, no duplicated knowledge that drifts.
+_DOCTOR_REPO_CODE = r"""
+import json, os
+out = {"errors": []}
+ticker = os.environ.get("TA_DOCTOR_TICKER") or ""
+try:
+    from tradingagents.default_config import DEFAULT_CONFIG as cfg
+    from tradingagents.memory import TradingMemoryLog, settlement
+    if ticker:
+        out["benchmark"] = settlement.resolve_benchmark(ticker, cfg)
+    out["horizons"] = settlement.get_evaluation_horizons(cfg)
+    out["memory_log_path"] = cfg.get("memory_log_path")
+    out["issuer_registry_path"] = cfg.get("issuer_registry_path")
+    out["benchmark_suffixes"] = sorted(cfg.get("benchmark_map") or {})
+    log = TradingMemoryLog({"memory_log_path": cfg.get("memory_log_path")})
+    entries = log.load_entries()
+    out["memory_entries"] = len(entries)
+    out["memory_pending"] = sum(1 for e in entries if e.get("pending"))
+    out["memory_writable"] = os.access(os.path.dirname(cfg.get("memory_log_path")), os.W_OK)
+except Exception as exc:
+    out["errors"].append(type(exc).__name__ + ": " + str(exc))
+print(json.dumps(out))
+"""
+
+
+def _repo_health(root: Path, ticker: str | None) -> dict:
+    """Run the repo's own checks in its venv python; never raise, report instead."""
+    venv_py = root / ".venv" / "bin" / "python"
+    python = str(venv_py) if venv_py.is_file() else sys.executable
+    env = dict(os.environ)
+    env["TA_DOCTOR_TICKER"] = ticker or ""
+    env.pop("PYTHONPATH", None)
+    try:
+        cp = subprocess.run([python, "-c", _DOCTOR_REPO_CODE], cwd=str(root), env=env,
+                            text=True, capture_output=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"errors": [f"repo probe failed: {type(exc).__name__}: {exc}"]}
+    for line in reversed((cp.stdout or "").strip().splitlines()):
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    detail = (cp.stderr or "").strip().splitlines()[-1:] or ["no output"]
+    return {"errors": [f"repo probe produced no JSON ({detail[0]})"]}
+
+
+def _writable_dir(path: Path) -> tuple[bool, str]:
+    """Can a run create this directory (or write into it if it exists)?"""
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return os.access(probe, os.W_OK), str(probe)
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """`doctor [TICKER]`: pre-flight for unattended runs. Exit 0/3/4."""
+    checks: list[dict] = []
+
+    def check(name: str, status: str, detail: str) -> None:
+        checks.append({"check": name, "status": status, "detail": detail})
+
+    # --- installation ------------------------------------------------------
+    try:
+        root = find_install_root()
+    except SystemExit:
+        root = None
+    if root and root.is_dir():
+        check("install_root", "ok", str(root))
+    else:
+        check("install_root", "blocked", "TradingAgents checkout not found (TRADINGAGENTS_HOME?)")
+    if root:
+        venv_py = root / ".venv" / "bin" / "python"
+        check("venv_python", "ok" if venv_py.is_file() else "blocked",
+              str(venv_py) if venv_py.is_file() else f"missing: {venv_py}")
+        try:
+            check("cli", "ok", " ".join(discover_command(root)))
+        except SystemExit as exc:
+            check("cli", "blocked", f"no runnable CLI ({exc.code})")
+
+    # --- curated sources / ticker identity -----------------------------------
+    sources = Path(__file__).resolve().parent.parent / "references" / "hardcoded_sources.yaml"
+    try:
+        import yaml
+        data = yaml.safe_load(sources.read_text(encoding="utf-8")) or {}
+        check("hardcoded_sources", "ok", f"{len(data.get('tickers') or {})} ticker entries")
+    except Exception as exc:  # noqa: BLE001 — doctor reports, never raises
+        data = {}
+        check("hardcoded_sources", "blocked", f"{sources.name} unreadable: {exc}")
+
+    ticker = getattr(args, "ticker", None)
+    if ticker:
+        meta = (data.get("tickers") or {}).get(ticker)
+        if not meta:
+            check("ticker_metadata", "blocked", f"{ticker} has no entry in hardcoded_sources.yaml")
+        elif not meta.get("names"):
+            check("ticker_metadata", "blocked", f"{ticker} entry has no names")
+        else:
+            isin = str(meta.get("isin") or "")
+            check("ticker_metadata", "ok",
+                  f"{meta['names'][0]}" + (f", ISIN {isin}" if isin else ", no ISIN (name-only matching)"))
+
+    # --- portfolio / supplement (optional inputs) ---------------------------
+    if getattr(args, "portfolio", None):
+        try:
+            portfolio_file(args.portfolio)
+            check("portfolio", "ok", args.portfolio)
+        except argparse.ArgumentTypeError as exc:
+            check("portfolio", "blocked", str(exc))
+    if getattr(args, "supplement", None):
+        try:
+            supplement(args.supplement)
+            validate_supplement(args.supplement, ticker or "", args.date or dt.date.today().isoformat())
+            check("news_supplement", "ok", args.supplement)
+        except (argparse.ArgumentTypeError, ValueError) as exc:
+            check("news_supplement", "blocked", str(exc))
+
+    # --- what the installed package knows -----------------------------------
+    health = _repo_health(root, ticker) if root else {"errors": ["no installation"]}
+    if health.get("errors"):
+        check("repo_probe", "blocked", "; ".join(health["errors"]))
+    else:
+        check("repo_probe", "ok", "package importable")
+
+    if ticker and health.get("benchmark"):
+        check("benchmark", "ok", f"{ticker} -> {health['benchmark']}")
+    elif ticker and not health.get("errors"):
+        check("benchmark", "degraded", "no benchmark resolved for this suffix (defaults to SPY)")
+
+    horizons = list(health.get("horizons") or [])
+    if horizons:
+        status = "ok" if len(horizons) > 1 else "degraded"
+        check("evaluation_horizons", status,
+              ", ".join(str(h) for h in horizons) + (" (legacy single window)" if len(horizons) == 1 else ""))
+    elif not health.get("errors"):
+        check("evaluation_horizons", "blocked", "no valid evaluation window configured")
+
+    registry_path = health.get("issuer_registry_path")
+    if registry_path:
+        path = Path(str(registry_path)).expanduser()
+        if not path.exists():
+            check("issuer_registry", "degraded",
+                  f"absent: {path} (ureg_pdmr self-selects only for registered issuers)")
+        else:
+            try:
+                json.loads(path.read_text(encoding="utf-8"))
+                check("issuer_registry", "ok", str(path))
+            except (OSError, json.JSONDecodeError) as exc:
+                check("issuer_registry", "blocked", f"invalid JSON: {exc}")
+
+    if "memory_entries" in health:
+        status = "ok" if health.get("memory_writable") else "blocked"
+        check("memory_log", status,
+              f"{health['memory_entries']} entries ({health.get('memory_pending', 0)} pending); "
+              f"path {health.get('memory_log_path')}"
+              + ("" if health.get("memory_writable") else " — directory not writable"))
+
+    # --- run directories ----------------------------------------------------
+    probe_ticker = ticker or "DOCTOR"
+    out_dir = default_output_dir(probe_ticker, args.date or dt.date.today().isoformat(), None)
+    ok, existing = _writable_dir(out_dir)
+    check("output_dir", "ok" if ok else "blocked", f"{out_dir} (writable: {existing})")
+    cache = Path.home() / ".tradingagents" / "cache"
+    ok, existing = _writable_dir(cache)
+    check("cache_dir", "ok" if ok else "degraded", f"{cache} (writable: {existing})")
+
+    # --- LLM backends -------------------------------------------------------
+    llm = getattr(args, "llm", None) or "auto"
+    if llm == "auto":
+        available = [(name, _profile_precheck(name)) for name in LLM_CHAIN]
+        usable = [name for name, (ok, _why) in available if ok]
+        detail = "; ".join(f"{n}: {'ok' if ok else why}" for n, (ok, why) in available)
+        check("llm_backends", "ok" if usable else "blocked",
+              (f"usable: {', '.join(usable)}" if usable else "none reachable") + f" ({detail})")
+    else:
+        ok, why = _profile_precheck(llm)
+        check("llm_backend", "ok" if ok else "blocked", llm if ok else f"{llm}: {why}")
+
+    statuses = {c["status"] for c in checks}
+    status = "blocked" if "blocked" in statuses else ("degraded" if "degraded" in statuses else "ok")
+    result = {"ok": status == "ok", "status": status, "ticker": ticker,
+              "date": args.date or dt.date.today().isoformat(), "checks": checks,
+              "exit_code": DOCTOR_EXIT[status]}
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    raise SystemExit(DOCTOR_EXIT[status])
 
 
 def cmd_news(args: argparse.Namespace) -> None:
@@ -892,7 +1141,8 @@ def execute_run(a: argparse.Namespace) -> None:
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
             fail("--ui needs a graphical session (DISPLAY/WAYLAND_DISPLAY missing).")
         prof = chain[0]
-        env = build_child_env(out, prof, _resolve_profile(prof),
+        llm_defaults = _resolve_profile(prof)
+        env = build_child_env(out, prof, llm_defaults,
                               a.debate_rounds, a.risk_rounds, a.news_supplement)
         cmd = discover_command(root) + ["--ticker", a.ticker, "--date", a.date,
                                         "--analysts", a.analysts,
@@ -901,10 +1151,15 @@ def execute_run(a: argparse.Namespace) -> None:
             cmd += ["--portfolio", a.portfolio]
         title = f"TradingAgents {a.ticker} {a.date}"
         inner = " ".join(shlex.quote(part) for part in cmd)
+        # The window's stdout is a TTY (that is the point of --ui), so nothing
+        # can be captured here. The child records its own exit code in a file;
+        # that plus the saved report tree is the run's audit trail.
+        exit_file = out / ".run_exit_code"
         script = "\n".join([
             f"cd {shlex.quote(str(root))}",
             inner,
             "rc=$?",
+            f"printf '%s' \"$rc\" > {shlex.quote(str(exit_file))}",
             "echo",
             "echo '--- TradingAgents-Run beendet (Exit-Code $rc) ---'",
             "echo 'Das Fenster bleibt offen; Enter schliesst es.'",
@@ -925,16 +1180,52 @@ def execute_run(a: argparse.Namespace) -> None:
             v = os.environ.get(k)
             if v:
                 gt_env[k] = v
+        started = time.time()
+        try:
+            exit_file.unlink()
+        except OSError:
+            pass
         subprocess.run(["gnome-terminal", "--title", title, "--geometry", "170x48",
                         "--wait", "--", "bash", "-c", script], env=gt_env)
-        files = []
-        for p in sorted(out.rglob("*")):
-            if p.is_file() and p.suffix.lower() in REPORT_SUFFIXES:
-                files.append({"path": str(p), "sha256": sha256(p),
-                              "bytes": p.stat().st_size})
+        rc = None
+        try:
+            rc = int(exit_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pass
+        try:
+            exit_file.unlink()
+        except OSError:
+            pass
+        files = report_files(out)
+        matrix = read_coverage_matrix(out)
+        # An audit trail is the point: without this, a --ui run (the default
+        # interactive path) left no machine-readable record of what ran.
+        provenance = {
+            "wrapper_version": WRAPPER_VERSION, "ui": True,
+            "timed_out": False, "partial": rc not in (0, None),
+            "returncode": rc,
+            "started_utc": dt.datetime.fromtimestamp(started, dt.timezone.utc).isoformat(),
+            "finished_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "ticker": a.ticker, "analysis_date": a.date,
+            "analysts": a.analysts.split(','),
+            "debate_rounds": a.debate_rounds, "risk_rounds": a.risk_rounds,
+            "news_supplement": a.news_supplement,
+            "llm_profile": prof,
+            "llm_model": llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
+            "llm_backend_url": llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
+            "llm_chain": [prof],
+            "command": cmd,
+            "report_files": files,
+            "data_coverage": matrix,
+            "data_coverage_source": "report" if matrix else None,
+            "console_output": "tty (--ui); no tradingagents.log — see the saved report tree",
+        }
+        prov = write_provenance(out, provenance)
         result = {"ok": bool(files), "ui": True, "ticker": a.ticker, "date": a.date,
+                  "returncode": rc,
                   "analysts": a.analysts.split(","), "llm": prof,
                   "output_dir": str(out), "report_files": files,
+                  "provenance": str(prov), "data_coverage": matrix,
                   "note": "TUI ran in its own terminal window; console output was on "
                           "the TTY (no log file), the saved report files are the result."}
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -971,11 +1262,12 @@ def execute_run(a: argparse.Namespace) -> None:
         attempt_log.write_text(log_text, encoding="utf-8")
         try: attempt_log.chmod(0o600)
         except OSError: pass
-        files=[]
-        for p in sorted(out.rglob("*")):
-            if p.is_file() and p.suffix.lower() in REPORT_SUFFIXES:
-                files.append({"path": str(p), "sha256": sha256(p), "bytes": p.stat().st_size})
+        files = report_files(out)
         data_coverage = build_data_coverage(log_text)
+        # The report's own matrix (routing-layer records) beats the log view:
+        # it also exists in --ui mode and names the vendor that served a call.
+        coverage_matrix = read_coverage_matrix(out)
+        data_coverage["matrix"] = coverage_matrix
         fallback_reason = _fallback_reason(cp.returncode, timed_out, files, log_text)
         attempts.append({
             "attempt": idx + 1, "llm_profile": prof,
@@ -1029,6 +1321,7 @@ examples:
   run_analysis.py run RHM.DE --ui       # volle TUI in eigenem gnome-terminal-Fenster
   run_analysis.py run RHM.DE --portfolio=~/.tradingagents/portfolio.example.json
   run_analysis.py news RHM.DE           # nur das News-Supplement bauen (Pfad nachdrucken)
+  run_analysis.py doctor RHM.DE         # Pre-flight: Exit 0 ok / 3 degraded / 4 blocked
   run_analysis.py run RHM.DE 2026-11-03 # anderes Analyse-Datum
   run_analysis.py run RHM.DE --dry-run  # nur das Child-Command anzeigen (kein News-Build, kein LLM-Call)
 """
@@ -1085,6 +1378,16 @@ def main() -> None:
     pn.add_argument("ticker", type=ticker, help="Ticker, z. B. RHM.DE")
     pn.add_argument("date", nargs="?", type=iso_date, default=None, help="Analyse-Datum YYYY-MM-DD (Default: heute)")
     pn.set_defaults(func=cmd_news)
+
+    pdoc = sub.add_parser("doctor", help="Pre-flight für unbeaufsichtigte Runs (Exit 0 ok / 3 degraded / 4 blocked)",
+                          formatter_class=argparse.RawDescriptionHelpFormatter)
+    pdoc.add_argument("ticker", nargs="?", type=ticker, default=None, help="optional: Ticker für ticker-spezifische Checks")
+    pdoc.add_argument("date", nargs="?", type=iso_date, default=None, help="optional: Analyse-Datum YYYY-MM-DD")
+    pdoc.add_argument("--llm", choices=["auto", "copilot", "lmstudio", "webercloud"], default=None,
+                      help="nur dieses Backend prüfen (Default: auto = alle in der Kette)")
+    pdoc.add_argument("--portfolio", default=None, help="Portfolio-JSON mitprüfen")
+    pdoc.add_argument("--supplement", default=None, help="News-Supplement mitprüfen")
+    pdoc.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args()
     if not getattr(args, "func", None):

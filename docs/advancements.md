@@ -97,6 +97,67 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.5] — 2026-10-21
+
+Closing the two audit holes that mattered most: a run's data gaps now reach the
+decision and the report, and an interactive `--ui` run finally leaves a record.
+
+### Added — per-run data-coverage matrix (repo + report)
+
+- **`tradingagents/dataflows/coverage.py`** — a per-run registry the routing
+  layer writes into: which vendor served each data method, which were skipped
+  and why (`not_configured` / `unavailable` / `failed` / `no_data`). Repeated
+  identical skips collapse, so a vendor refused on every bar of a window is one
+  gap, not fifty.
+- **`router.route_to_vendor`** records the outcome at every branch. This is the
+  only place that knows a call's true provenance, so the matrix is derived from
+  what happened rather than re-parsed from logs.
+- **Portfolio Manager** receives a `DATA COVERAGE` block before the risk debate:
+  how many expected inputs for the asset type arrived cleanly, which are
+  degraded/unavailable, which were never requested, and the rule that an
+  unavailable input must be reported as unknown rather than assumed.
+- **Report** gains section `VI. Data Coverage` (markdown + HTML) with a
+  per-method table (`Input | Status | Served by | Skipped`) and the concrete
+  gaps; `save_reports` also writes a machine-readable `data_coverage.json` next
+  to it. A method nobody called is labelled *not requested*, never as a gap.
+- Coverage resets per run in `create_run_state`, so sequential backtests do not
+  inherit each other's records.
+
+### Changed — `--ui` runs write `provenance.json` (wrapper)
+
+- A `--ui` run returned before the attempt loop, so the default interactive path
+  left **no** `provenance.json` and no `tradingagents.log` — the console output
+  went to the TTY. The windowed shell now records the child's exit code in a
+  hand-off file; the wrapper writes a full provenance record (profile, model,
+  backend URL, timing, report hashes, exit code, `partial`) and removes the
+  hand-off file.
+- Both paths now carry the repo's coverage matrix (`data_coverage.matrix`,
+  `data_coverage_source`) alongside the legacy log-derived `data_coverage`,
+  which keeps working for runs that produced no report tree.
+- Shared helpers `report_files()` / `write_provenance()` (mode 600) so the two
+  paths cannot drift again.
+
+### Added — `run_analysis.py doctor` (wrapper pre-flight)
+
+- `doctor [TICKER] [DATE] [--llm=] [--portfolio=] [--supplement=]` checks the
+  installation (root, venv python, CLI), `hardcoded_sources.yaml` and the
+  ticker's entry, optional portfolio/supplement inputs, and — through one child
+  process in the repo venv — the resolved benchmark, evaluation horizons, issuer
+  registry, memory log (entries, pending count, writability) and directory
+  write access. LLM backends are probed per profile.
+- Exit codes: **0** ok, **3** degraded, **4** blocked. Every check reports its
+  own status, so an unattended job can refuse to start instead of failing two
+  hours in.
+
+### Testing
+
+- `tests/test_data_coverage.py` (10): registry semantics, router recording for
+  skip/success/untyped failure, PM prompt and state, report section + JSON twin.
+- `hermes/skills/.../tests/test_run_analysis_provenance_doctor.py` (7):
+  newest-matrix selection, `--ui` provenance with exit code 0 and 1 (partial),
+  doctor ok/blocked/degraded paths and exit codes.
+- Full repo suite: see commit message.
+
 ## [Fork v1.0.4] — 2026-10-21
 
 One wrapper instead of two — and the skill that drives it is versioned in this repo.
