@@ -46,7 +46,41 @@ The integration uses public, keyless APIs: [Eurostat API](https://ec.europa.eu/e
 
 The checked-in `config/german_equities.example.json` is a single-instrument template; the local default registry at `~/.tradingagents/german_equities.json` currently seeds 19 verified German issuers (SAP, Rheinmetall, Allianz, Mercedes-Benz Group, Deutsche Bank, adidas, Volkswagen, BASF, Bayer, Deutsche Telekom, E.ON, Continental, Heidelberg Materials, Munich Re, Infineon, …). For each, `news_feed_url` is `null` unless an official standardized RSS/Atom endpoint was verified for that issuer — in that state the provider reports "not configured" and the explicit chain falls back to Yahoo; it does not claim that the issuer had no news. Only HTTPS RSS/Atom URLs are accepted. The same entries carry the UReg identity used by `ureg_pdmr` (`ureg_query_name` + `ureg_entity_name`, both captured live, not inferred). For each new listing, record ISIN, WKN, venue MIC, currency and each source's own symbol; do not infer instrument identity from `.DE` alone.
 
-This adapter reads configured RSS/Atom feed entries; it does not scrape logged-in websites or attempt to turn an IR page into a feed. Issuer feed discovery/configuration remains per-company work, and current prices/fundamentals remain on existing providers pending a representative German coverage pilot.
+`issuer_rss` reads configured RSS/Atom feed entries and never scrapes logged-in websites. `issuer_ir` reads the issuer's **public sitemap and release pages** — no login, no JS rendering, `robots.txt` honoured per URL — and only after a recorded terms check (`ir.terms_checked`); it skips every matching release when robots disallows them. Both remain per-company configuration work, and current prices/fundamentals stay on the existing providers.
+
+### Issuer-site releases (`issuer_ir`) — configuration shape
+
+Enabled per issuer in the registry; nothing is inferred and an issuer without the
+block is skipped (the chain falls through to the RSS vendor and the aggregators):
+
+```json
+"RHM.DE": {
+  "ir": {
+    "enabled": true,
+    "terms_checked": "2026-10-21: robots.txt allows crawling of /media/news-watch; internal analysis only, no republication",
+    "sitemap": "https://www.rheinmetall.com/sitemap.site_1.xml",
+    "url_patterns": ["/media/news-watch/news/\\d{4}/\\d{2}/\\d{4}-\\d{2}-\\d{2}-"]
+  }
+}
+```
+
+Behaviour worth knowing:
+
+- **Discovery is one sitemap request**, cached for 24 h under `<cache>/sitemaps/`.
+  Sitemap indexes are followed one level; gzip is detected by magic bytes.
+- **The date comes from the slug** (`…/2026/10/2026-10-08-…`); a URL without a
+  `YYYY-MM-DD` is skipped rather than guessed, because an undated release cannot
+  be placed point-in-time.
+- **DE/EN twins are paired via the article's `hreflang` block** and reported once
+  (German kept) — the two slugs differ, so the URL alone cannot pair them.
+  Skipped twins are counted in the output.
+- **robots.txt is honoured per URL** (`urllib.robotparser`, cached per host). If it
+  disallows every matching release the vendor is *unavailable*, not empty.
+- **Bounded work**: at most 8 article fetches per call, 1,200-character excerpts,
+  25 s timeouts. The output names the source, the window and the terms check, and
+  says that issuer wording is not independent corroboration.
+- **Not supported**: login walls, JS-only lists without a sitemap, and sites whose
+  robots.txt forbids crawling (verified: `sap.com` = `Disallow: /`).
 
 ## Alpha Vantage price fallback
 
@@ -86,7 +120,7 @@ Ticker-agnostic limits that remain after the adapters above; each is reported as
 |---|---|---|
 | Per-house analyst targets + as-of date | Yahoo exposes only the aggregate (mean/median/low/high/headcount) plus the spread block; Finnhub's `stock/price-target` is plan-gated (403) and `stock/recommendation` is **403 for EU tickers** (verified: AAPL 200, SAP.DE/RHM.DE 403) | The agent sees dispersion but not *which* house moved; per-house calls (e.g. a downgrade) surface via news articles, not structured data |
 | DE insider transactions (PDMR) | **Closed — keyless**: the `ureg_pdmr` vendor reads the Unternehmensregister capital-market search (category "Eigengeschäfte von Führungskräften", PDMR id 80) with plain `requests` (no browser/CDP). It is first in the `get_insider_transactions` chain and self-selects via the issuer registry; non-registry tickers fall through to Finnhub. See below | Structured Art. 19 MAR fields per person (position, LEI, ISIN, price/volume, dates, place) with per-emitter entity validation and point-in-time filter |
-| Issuer first-party feed | `issuer_rss` is wired and authoritative when configured, but `news_feed_url` is `null` in the seed registry | Until an HTTPS feed is verified per instrument, `get_news` relies on Marketaux (EU disclosure coverage) and the optional news supplement |
+| Issuer first-party feed | **Partly closed — keyless, per issuer**: `issuer_ir` (first in the `get_news` chain) reads the issuer's own **sitemap**, filters release URLs by configured path patterns and slug date, and extracts the release text from the server-rendered article page. RHM.DE is the pilot (verified 2026-10-21: sitemap lists dated releases incl. Q1/H1/annual reports and the 08.10. credit-facility release; robots.txt allows it). `issuer_rss` stays for issuers that do publish a feed; SAP-style sites (`Disallow: /`) cannot be used | First-party wording for corporate events without a licensed aggregator; the vendor self-selects via the registry and needs an explicit `ir.terms_checked` before it is enabled |
 | DE capital-market disclosures (ad-hoc, voting rights, HV/capital measures, §50 WpHG) | **Closed — keyless**: `get_capital_market_disclosures` (vendor `ureg_capital`, category `disclosure_data`) reads the same Unternehmensregister search and serves categories 79 (Art. 17 MAR ad-hoc), 81 (WpHG §40/41), 83 (capital-market information: buy-backs, AGM, capital measures) and 89 (§50 WpHG), point-in-time on the publication date, DE/EN twins merged | The News Analyst gets official issuer events instead of inferring them from articles; for non-German listings the tool says the source does not cover the instrument — never "no event" |
 | Fundamentals for EU issuers | SEC EDGAR does not serve EU filers; the statements chain falls to Yahoo's restated figures | DE fundamentals are single-vendor; reconciliation covers price data, not EU statements |
 | ETF top holdings/positions | **Closed — keyless**: the ETF profile block carries the top holdings via `yf.Ticker(...).funds_data.top_holdings` (ranked, weights in %, top 10), labelled with the fact that Yahoo supplies no as-of date for the snapshot | ETF exposure is visible in the fundamentals report; still no historical holdings or full constituent list |

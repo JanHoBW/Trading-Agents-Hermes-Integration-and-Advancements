@@ -97,6 +97,36 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.10] — 2026-10-21
+
+### Added — first-party issuer releases via sitemap discovery (`issuer_ir`)
+
+- New vendor `issuer_ir`, first in the `get_news` chain. German issuer sites are
+  JS apps whose news list holds no links, but their sitemaps list every release
+  with a dated slug and the release pages are server-rendered — so discovery is
+  one sitemap request instead of a crawl.
+- Per-issuer config in the registry (`ir.enabled`, `ir.terms_checked`,
+  `ir.sitemap`, `ir.url_patterns`); no block, disabled, or an empty terms check
+  raises `VendorNotConfiguredError` so the chain falls through. `robots.txt` is
+  honoured per URL (cached per host); if it forbids every matching release the
+  vendor is *unavailable*, not empty.
+- DE/EN twins are paired through the article's `hreflang` block (the slugs differ)
+  and reported once, German kept, with the skipped count in the output. Dates come
+  from the slug; undated URLs are skipped rather than guessed. Bounded: 8 article
+  fetches, 1,200-char excerpts, 25 s timeouts, 24 h sitemap cache.
+- RHM.DE pilot (registry entry added): a 14–21 Oct window returns the 19.10.
+  Mangalia shipyard takeover and the 16.10. Albacete medium-calibre line as clean
+  first-party text, translated twins deduped.
+- `load_instrument` moved to `tradingagents/dataflows/issuer_registry.py` and is
+  shared by `issuer_rss`, `issuer_ir` (and available to future issuers vendors);
+  `issuer_rss` delegates to it, so both read exactly one registry.
+- Tests: `tests/test_issuer_ir.py` (19) — sitemap/index parsing, pattern+window
+  filtering, hreflang pairing, boilerplate stripping, gate matrix, robots refusal,
+  limit, empty-window wording, router wiring, registry lookup. Two existing
+  routing/config tests updated for the new chain head; full suite 1640 passed.
+- Known limit: sites like `sap.com` (`Disallow: /`) and issuers without a sitemap
+  cannot be served; they degrade to the previous vendors.
+
 ## [Fork v1.0.9] — 2026-10-21
 
 ### Fixed — Yahoo news searched by symbol only

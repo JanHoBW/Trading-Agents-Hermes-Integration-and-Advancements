@@ -27,6 +27,7 @@ from tradingagents.dataflows.vendors.finnhub import (
     get_news_finnhub,
 )
 from tradingagents.dataflows.vendors.fred import get_macro_data as get_fred_macro_data
+from tradingagents.dataflows.vendors.issuer_ir import get_news_issuer_ir
 from tradingagents.dataflows.vendors.issuer_rss import get_news_issuer_rss
 from tradingagents.dataflows.vendors.ureg_pdmr import (
     get_ureg_capital_market_disclosures,
@@ -152,6 +153,9 @@ VENDOR_METHODS = {
     },
     # news_data
     "get_news": {
+        # First-party issuer sites lead: a company's own release is authoritative
+        # for what it said, and the vendor self-selects via the issuer registry.
+        "issuer_ir": get_news_issuer_ir,
         "marketaux": get_news_marketaux,
         "finnhub": get_news_finnhub,
         "alpha_vantage": get_alpha_vantage_news,

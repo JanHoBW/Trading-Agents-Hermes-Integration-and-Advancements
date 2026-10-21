@@ -195,7 +195,7 @@ def build_default_config() -> dict:
             # News/insider chain, shared by get_news, get_global_news and
             # get_insider_transactions (the router filters to the vendors that
             # implement each method). Provenance priority, first-party first:
-            #   get_news  -> issuer_rss, marketaux, finnhub, yfinance, alpha_vantage
+            #   get_news  -> issuer_ir, issuer_rss, marketaux, finnhub, yfinance, alpha_vantage
             #   get_insider_transactions -> ureg_pdmr, finnhub, yfinance, alpha_vantage
             #   get_global_news -> yfinance, alpha_vantage
             # issuer_rss is authoritative for a ticker that has a configured
@@ -215,7 +215,7 @@ def build_default_config() -> dict:
             # falls through for other markets); its insider feed is SEC-sourced
             # and carries Form 4 filing dates, so it stands ahead of yfinance /
             # alpha_vantage for the insider tool.
-            "news_data": "ureg_pdmr,issuer_rss,marketaux,finnhub,yfinance,alpha_vantage",  # Options: ureg_pdmr, issuer_rss, marketaux, finnhub, yfinance, alpha_vantage
+            "news_data": "issuer_ir,ureg_pdmr,issuer_rss,marketaux,finnhub,yfinance,alpha_vantage",  # Options: issuer_ir, ureg_pdmr, issuer_rss, marketaux, finnhub, yfinance, alpha_vantage
             "macro_data": "official_europe,fred",  # ECB/Eurostat official series; FRED fallback
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
             # Official issuer disclosures from the German register (ad-hoc

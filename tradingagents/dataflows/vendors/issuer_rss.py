@@ -1,7 +1,6 @@
 """Configured official issuer RSS/Atom feeds for ticker-specific news."""
 from __future__ import annotations
 
-import json
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
@@ -13,6 +12,7 @@ import requests
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import VendorNotConfiguredError, VendorUnavailableError
+from tradingagents.dataflows.issuer_registry import load_instrument
 from tradingagents.dataflows.net import get_scrubbed
 
 REQUEST_TIMEOUT = 20
@@ -89,36 +89,8 @@ def parse_feed(xml_text: str) -> tuple[list[dict], int]:
 
 
 def _load_instrument(ticker: str) -> dict:
-    path = Path(get_config().get("issuer_registry_path", "~/.tradingagents/german_equities.json")).expanduser()
-    if not path.is_file():
-        raise VendorNotConfiguredError(f"issuer registry not found: {path}")
-    try:
-        registry = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise VendorUnavailableError(f"could not read issuer registry {path}: {exc}") from None
-    instruments = registry.get("instruments", {}) if isinstance(registry, dict) else {}
-    if not isinstance(instruments, dict):
-        raise VendorUnavailableError("issuer registry 'instruments' must be a JSON object")
-    wanted = ticker.strip().upper()
-    for key, record in instruments.items():
-        if not isinstance(record, dict):
-            continue
-        aliases = record.get("aliases", [])
-        candidates = [
-            key,
-            record.get("ticker"),
-            record.get("isin"),
-            record.get("wkn"),
-            record.get("yahoo_symbol"),
-            record.get("alpha_vantage_symbol"),
-            *(aliases if isinstance(aliases, list) else []),
-        ]
-        if any(str(candidate).strip().upper() == wanted for candidate in candidates):
-            feed_url = record.get("news_feed_url")
-            if feed_url and (urlparse(feed_url).scheme != "https" or not urlparse(feed_url).hostname):
-                raise VendorNotConfiguredError(f"issuer feed URL for {ticker} must use HTTPS")
-            return {**record, "ticker": key, "news_feed_url": feed_url}
-    raise VendorNotConfiguredError(f"no issuer identity/feed configured for {ticker}")
+    """The registry record for ``ticker`` — shared with the other issuer vendors."""
+    return load_instrument(ticker, get_config())
 
 
 def get_news_issuer_rss(ticker: str, start_date: str, end_date: str) -> str:
