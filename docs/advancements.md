@@ -97,6 +97,33 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.12] — 2026-10-21
+
+### Added — weekly trend in the verified snapshot, deterministic report gate
+
+- `build_verified_market_snapshot` resamples its own daily rows into calendar weeks
+  and reports weekly `close_10_ema`, `close_20_sma`, `rsi`, `macd`, `macds`, `macdh`
+  plus the 52-week range of weekly closes. Week labels are the last real session
+  (never the nominal Friday), so a mid-week as-of date cannot produce a future bar;
+  under 35 weekly bars the section says "insufficient weekly history" instead of
+  rendering NaNs. The prompt guidance now states that daily and weekly readings of
+  the same indicator are not interchangeable.
+  Live RHM.DE 2026-10-14: weekly RSI 39.6, weekly MACD -103.2, close 983.30 against
+  a 52-week weekly-close range of 939.10-1883.18 — a downtrend the daily 30-bar
+  indicator set does not show.
+- New `tradingagents/report_gate.py`: a deterministic post-run gate over the saved
+  report tree. Blocking checks are structural or record-based (report present and
+  >= 2000 chars, decision present, exactly one unambiguous rating — an explicit
+  `**Rating**: X` line wins over prose alternatives, no TODO/TBD placeholders,
+  coverage snapshot written); stage gaps, a missing "Analysis windows" line and
+  non-`ok` coverage entries are warnings with details. `save_reports` runs it,
+  writes `quality_gate.json` next to the report and stores the verdict in the graph
+  state; the gate never raises, so a finished run cannot die on its own check.
+  This is not a port of the old finance profile's 13-gate script, which tested for
+  the presence of words ("RSI" in the text) rather than for backed numbers.
+- Tests: `tests/test_report_gate.py` (14) and 4 weekly-snapshot cases; full suite
+  1677 passed, 1 skipped.
+
 ## [Fork v1.0.11] — 2026-10-21
 
 ### Added — two analysis horizons (headline 7 d, first-party event context 180 d)

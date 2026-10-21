@@ -19,6 +19,13 @@ from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
 
+# Weekly indicators need ~35 bars (MACD 26 + signal 9) before stockstats returns
+# numbers; below that the section says so instead of rendering NaNs.
+WEEKLY_MIN_BARS = 35
+WEEKLY_INDICATORS: tuple[str, ...] = (
+    "close_10_ema", "close_20_sma", "rsi", "macd", "macds", "macdh",
+)
+
 # A fixed, common indicator set so the snapshot is the same shape every run.
 DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
     "close_10_ema", "close_50_sma", "close_200_sma",
@@ -61,6 +68,61 @@ def _fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:.2f}"
     return str(value)
+
+
+def _weekly_bars(df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate the daily bars into calendar weeks, labelled by their last session.
+
+    The label is the real last trading day of the week, never the nominal Friday:
+    a mid-week as-of date must not produce a bar dated in the future.
+    """
+    frame = df.copy()
+    week_end = frame["Date"] + pd.to_timedelta((4 - frame["Date"].dt.weekday) % 7, unit="D")
+    rows = []
+    for _, group in frame.groupby(week_end, sort=True):
+        rows.append({
+            "Date": group["Date"].iloc[-1],
+            "Open": group["Open"].iloc[0],
+            "High": group["High"].max(),
+            "Low": group["Low"].min(),
+            "Close": group["Close"].iloc[-1],
+            "Volume": group["Volume"].sum(),
+        })
+    return pd.DataFrame(rows)
+
+
+def _weekly_section(df: pd.DataFrame) -> list[str]:
+    """Weekly trend from the same verified rows — daily indicators miss it."""
+    weekly = _weekly_bars(df)
+    lines = ["", "### Weekly trend (calendar weeks resampled from the daily bars)", ""]
+    if len(weekly) < WEEKLY_MIN_BARS:
+        return lines + [
+            f"- Insufficient weekly history: {len(weekly)} bar(s), {WEEKLY_MIN_BARS} needed "
+            "for weekly indicators. Do not infer a weekly trend from these numbers."
+        ]
+
+    counted = wrap(weekly.copy())
+    values: dict[str, str] = {}
+    for name in WEEKLY_INDICATORS:
+        try:
+            counted[name]
+            values[name] = _fmt(counted.iloc[-1][name])
+        except Exception as exc:  # noqa: BLE001 — one bad indicator shouldn't sink the section
+            values[name] = f"N/A ({type(exc).__name__})"
+
+    last = weekly.iloc[-1]
+    year = weekly.tail(52)["Close"]
+    lines += [
+        f"- Weekly bars available: {len(weekly)} "
+        f"(first {_fmt(weekly.iloc[0]['Date'])} -> last {_fmt(last['Date'])})",
+        f"- Latest weekly bar: {_fmt(last['Date'])}, close {_fmt(last['Close'])}",
+        f"- 52-week range of weekly closes: {_fmt(year.min())} - {_fmt(year.max())}",
+        "",
+        "| Indicator (weekly bars) | Value |",
+        "|---|---:|",
+    ]
+    lines += [f"| {name} | {value} |" for name, value in values.items()]
+    return lines
 
 
 def build_verified_market_snapshot(
@@ -115,7 +177,13 @@ def build_verified_market_snapshot(
     for _, row in recent.iterrows():
         lines.append(f"| {_fmt(row['Date'])} | {_fmt(row.get('Close'))} |")
 
+    lines += _weekly_section(df)
+
     lines += [
+        "",
+        "Weekly values are computed on calendar-week bars resampled from the same "
+        "daily rows; daily and weekly readings of the same indicator are not "
+        "interchangeable (a weekly RSI is not a daily RSI).",
         "",
         "Use this snapshot as the source of truth for exact OHLCV, price-level, "
         "and indicator-value claims. If another tool output conflicts with it, "

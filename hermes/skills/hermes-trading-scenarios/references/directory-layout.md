@@ -30,11 +30,14 @@
 ├── message_tool.log              # Timestamps je Nachricht (Timing-Analyse)
 ├── full_states_log_<Datum>.json  # kompletter LangGraph-State
 ├── provenance.json               # Provenance: prompt_versions, replay_id,
-│                                 #   data_coverage, analysis_windows (beide Fenster)
+│                                 #   data_coverage, analysis_windows (beide Fenster),
+│                                 #   quality_gate (Status + fehlgeschlagene Checks)
 ├── tradingagents.log
 └── reports/                      # ALLE Report-Dateien, ungestempelt
     ├── market_report.md … investment_plan.md   (flache Stage-Dateien)
     ├── 1_analysts/ … 5_portfolio/             (Phasenordner)
+    ├── data_coverage.json                     (Coverage-Matrix, maschinenlesbar)
+    ├── quality_gate.json                      (APPROVED / NEEDS_REVIEW + Checks)
     └── complete_report.md + complete_report.html
 ```
 - `run_dir` ist opt-in (`results_layout`, Default `shared` = Upstream-Verhalten byte-identisch). Ticker-Validierung läuft in beiden Layouts.

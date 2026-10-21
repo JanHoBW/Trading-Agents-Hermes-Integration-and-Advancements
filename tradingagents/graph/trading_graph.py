@@ -20,6 +20,7 @@ from tradingagents.memory import TradingMemoryLog, settlement
 from tradingagents.memory import calibration
 from tradingagents.memory import realized
 from tradingagents.memory.reflection import Reflector
+from tradingagents.report_gate import run_quality_gate
 from tradingagents.reporting import write_report_tree
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
@@ -291,10 +292,15 @@ class TradingAgentsGraph:
         # Machine-readable twin of the report's Data Coverage section: the
         # wrapper and any post-run audit read this instead of re-parsing prose.
         snapshot = final_state.get("data_coverage") or {}
+        report_dir = Path(saved).parent
         if snapshot.get("methods"):
-            (Path(saved).parent / "data_coverage.json").write_text(
+            (report_dir / "data_coverage.json").write_text(
                 json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8"
             )
+        # The gate reads exactly what was written (report text, decision, coverage
+        # record) and stores its verdict next to the report. It never raises: a
+        # finished run must not die because its own quality check is unhappy.
+        final_state["quality_gate"] = run_quality_gate(report_dir)
         return saved
 
     def default_report_path(self, ticker) -> Path:

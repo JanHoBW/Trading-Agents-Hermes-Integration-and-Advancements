@@ -73,3 +73,64 @@ class TestTool:
             {"symbol": "COF", "curr_date": "2026-05-20"}
         )
         assert "Verified market data snapshot for COF" in out
+
+
+@pytest.mark.unit
+class TestWeeklySection:
+    """Daily indicators hide the weekly trend; the snapshot now carries both."""
+
+    def _long_ohlcv(self, start="2024-01-01", end="2026-05-20"):
+        dates = pd.bdate_range(start, end)
+        closes = [100 + i * 0.2 for i in range(len(dates))]
+        return pd.DataFrame({
+            "Date": dates,
+            "Open": [c - 0.1 for c in closes],
+            "High": [c + 0.5 for c in closes],
+            "Low": [c - 0.5 for c in closes],
+            "Close": closes,
+            "Volume": [10_000] * len(dates),
+        })
+
+    def test_weekly_indicators_are_reported(self, monkeypatch):
+        monkeypatch.setattr(validator, "load_ohlcv",
+                            lambda s, d, fill_gaps=True: self._long_ohlcv())
+        snap = validator.build_verified_market_snapshot("COF", "2026-05-13")
+        assert "### Weekly trend (calendar weeks resampled from the daily bars)" in snap
+        assert "Weekly bars available:" in snap
+        assert "| rsi |" in snap
+        assert "52-week range of weekly closes" in snap
+
+    def test_insufficient_history_says_so_instead_of_nan(self, monkeypatch):
+        monkeypatch.setattr(validator, "load_ohlcv",
+                            lambda s, d, fill_gaps=True: _sample_ohlcv())  # ~7 weeks
+        snap = validator.build_verified_market_snapshot("COF", "2026-05-13")
+        weekly = snap.split("### Weekly trend")[1]
+        assert "Insufficient weekly history" in weekly
+        assert "Do not infer a weekly trend" in weekly
+        assert "| rsi |" not in weekly          # no weekly indicators at all
+
+    def test_weekly_label_is_the_last_session_not_the_nominal_friday(self, monkeypatch):
+        # 2026-05-13 is a Wednesday; a W-FRI label would claim a future bar.
+        monkeypatch.setattr(validator, "load_ohlcv",
+                            lambda s, d, fill_gaps=True: self._long_ohlcv())
+        snap = validator.build_verified_market_snapshot("COF", "2026-05-13")
+        latest = [line for line in snap.splitlines() if line.startswith("- Latest weekly bar:")]
+        assert latest and "2026-05-13" in latest[0]
+
+    def test_weekly_bars_aggregate_the_daily_rows(self):
+        frame = pd.DataFrame({
+            "Date": pd.to_datetime(["2026-05-04", "2026-05-05", "2026-05-06",
+                                    "2026-05-08", "2026-05-11"]),
+            "Open": [10.0, 11.0, 12.0, 13.0, 20.0],
+            "High": [10.5, 11.5, 12.5, 13.5, 20.5],
+            "Low": [9.5, 10.5, 11.5, 12.5, 19.5],
+            "Close": [10.2, 11.2, 12.2, 13.2, 20.2],
+            "Volume": [100, 200, 300, 400, 500],
+        })
+        weekly = validator._weekly_bars(frame)
+        first = weekly.iloc[0]
+        assert first["Date"] == pd.Timestamp("2026-05-08")   # last session of that week
+        assert first["Open"] == 10.0 and first["Close"] == 13.2
+        assert first["High"] == 13.5 and first["Low"] == 9.5
+        assert first["Volume"] == 1000                        # summed within the week
+        assert weekly.iloc[1]["Date"] == pd.Timestamp("2026-05-11")

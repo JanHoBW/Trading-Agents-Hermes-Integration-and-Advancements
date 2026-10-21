@@ -48,6 +48,43 @@ An absent source renders as `GAP: …`, never as "nothing happened". The report'
 Data Coverage section prints both windows (`**Analysis windows**`), and
 `provenance.json` records them as `analysis_windows`.
 
+## Verified market snapshot — daily *and* weekly
+
+`build_verified_market_snapshot` (yahoo/snapshot.py) is the ground truth the market
+analyst must quote: latest OHLCV row on/before the analysis date, a fixed daily
+indicator set, recent closes. Since v1.0.12 it also resamples those same rows into
+calendar weeks (`_weekly_bars`) and reports weekly `close_10_ema`, `close_20_sma`,
+`rsi`, `macd`, `macds`, `macdh` plus the 52-week range of weekly closes.
+
+- Week labels are the **last real session** of each week, never the nominal Friday —
+  a mid-week as-of date must not produce a bar dated in the future.
+- Below 35 weekly bars (~8 months of history) the section states
+  "Insufficient weekly history … do not infer a weekly trend" instead of NaN rows.
+- The guidance text says daily and weekly readings are not interchangeable: a
+  weekly RSI of 39 with a daily RSI of 55 is a real, common divergence, and reading
+  one as the other was a systematic blind spot (live RHM.DE 2026-10-14: weekly RSI
+  39.6, weekly MACD −103, price at 983 against a 52-week high of 1883).
+
+## Report quality gate (`tradingagents/report_gate.py`)
+
+`save_reports` runs a deterministic gate over what it just wrote and stores the
+verdict in `reports/quality_gate.json` (+ `state["quality_gate"]`). It is a
+structural/record check, **not** a keyword contest over the prose:
+
+| Blocking (fails the gate) | Warning only |
+|---|---|
+| `complete_report.md` missing or < 2000 chars | a stage section missing |
+| `5_portfolio/decision.md` empty | `Analysis windows` line absent |
+| no unambiguous rating (`**Rating**: Buy` wins; otherwise exactly one of Buy/Overweight/Hold/Underweight/Sell) | any non-`ok` coverage entry |
+| `TODO`/`TBD`/`XXX`/`[insert`/`<insert`/`lorem ipsum` in the report | |
+| `data_coverage.json` missing/empty | |
+
+`status` is `APPROVED` or `NEEDS_REVIEW`; the gate never raises (an unwritable
+results dir degrades to "no file"), because a finished run must not die on its own
+quality check. It is deliberately not a port of the old profile's 13-gate
+`report_integrity_check.py`, which tested `"RSI" in report_text` — presence, not
+substance.
+
 ## Backtesting — native engine plus tiers
 
 The framework HAS a backtest engine (upstream base, present in the tree; CLI `--help` verified): `tradingagents/backtest.py` + the `tradingagents backtest` subcommand of the repo's typer app:

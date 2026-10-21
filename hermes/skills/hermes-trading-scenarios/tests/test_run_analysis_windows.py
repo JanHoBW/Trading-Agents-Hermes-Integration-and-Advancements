@@ -93,3 +93,30 @@ class WindowFlagTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQualityGateProvenance(unittest.TestCase):
+    def test_reads_the_verdict_from_the_report_tree(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "reports" / "6_coverage").mkdir(parents=True)
+            (out / "reports" / "quality_gate.json").write_text(json.dumps({
+                "status": "NEEDS_REVIEW",
+                "checks": [{"name": "decision_rating", "passed": False, "blocking": True, "detail": "x"}],
+                "gaps": [{"method": "get_news", "status": "degraded"}],
+            }), encoding="utf-8")
+            gate = run_analysis.read_quality_gate(out)
+        self.assertEqual(gate["status"], "NEEDS_REVIEW")
+        self.assertEqual(gate["failed_checks"], ["decision_rating"])
+        self.assertEqual(gate["gap_count"], 1)
+
+    def test_missing_gate_is_none(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(run_analysis.read_quality_gate(Path(tmp)))

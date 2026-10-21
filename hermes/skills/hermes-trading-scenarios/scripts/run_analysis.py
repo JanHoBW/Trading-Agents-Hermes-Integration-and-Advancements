@@ -724,6 +724,36 @@ def report_files(out: Path) -> list[dict]:
     return files
 
 
+def read_quality_gate(out: Path) -> dict | None:
+    """The repo's post-run gate verdict (``quality_gate.json``), newest wins.
+
+    Written by ``save_reports`` into the report tree, so it exists for headless
+    and ``--ui`` runs alike. Only the verdict and the failing check names go into
+    provenance — the full check list stays in the run directory.
+    """
+    candidates = sorted(
+        (q for q in out.rglob("quality_gate.json") if q.is_file()),
+        key=lambda q: q.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            gate = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(gate, dict):
+            continue
+        failed = [c.get("name") for c in gate.get("checks") or []
+                  if c.get("blocking") and not c.get("passed")]
+        return {
+            "status": gate.get("status"),
+            "failed_checks": failed,
+            "gap_count": len(gate.get("gaps") or []),
+            "path": str(path),
+        }
+    return None
+
+
 def write_provenance(out: Path, payload: dict) -> Path:
     """Write ``provenance.json`` into the run dir (mode 600: it names endpoints)."""
     prov = out / "provenance.json"
@@ -1380,6 +1410,7 @@ def execute_run(a: argparse.Namespace) -> None:
             "report_files": files,
             "data_coverage": matrix,
             "data_coverage_source": "report" if matrix else None,
+            "quality_gate": read_quality_gate(out),
             "prompt_versions": prompts,
             "analysis_windows": analysis_windows_summary(run_date(a)),
             "replay_id": replay_id(a, prof, prompts, effort),
@@ -1393,6 +1424,7 @@ def execute_run(a: argparse.Namespace) -> None:
                   "analysts": a.analysts.split(","), "llm": prof,
                   "output_dir": str(out), "report_files": files,
                   "provenance": str(prov), "data_coverage": matrix,
+                  "quality_gate": read_quality_gate(out),
                   "note": "TUI ran in its own terminal window; console output was on "
                           "the TTY (no log file), the saved report files are the result."}
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -1455,6 +1487,7 @@ def execute_run(a: argparse.Namespace) -> None:
                         "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                         "llm_chain":chain,"attempts":attempts,
                         "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions": prompts,
+                        "quality_gate": read_quality_gate(out),
                         "analysis_windows": analysis_windows_summary(run_date(a)),
                         "replay_id":replay_id(a,prof,prompts,effort),
                         "reasoning_effort":effort,
@@ -1462,7 +1495,8 @@ def execute_run(a: argparse.Namespace) -> None:
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
             prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")
             result.update({"llm": prof, "elapsed_seconds": elapsed, "log": str(log), "provenance": str(prov),
-                           "attempts": attempts, "report_files": files, "data_coverage": data_coverage})
+                           "attempts": attempts, "report_files": files, "data_coverage": data_coverage,
+                           "quality_gate": read_quality_gate(out)})
             print(json.dumps(result, indent=2, ensure_ascii=False)); return
         # Failed. If it looks like an LLM-backend fault and backends remain, fall back.
         if fallback_reason and idx < len(chain) - 1:
