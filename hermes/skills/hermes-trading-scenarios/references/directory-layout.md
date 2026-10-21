@@ -43,7 +43,7 @@
 ### D. Wrapper + Skill (Profilbereich)
 `~/.hermes/profiles/trading-agents/skills/hermes-trading-scenarios/`
 - `scripts/run_analysis.py` = EINZIGES öffentliches Entry-Point (`run|news`, v2.0.0 seit 2026-10-20; `ta.sh` gelöscht); setzt `TRADINGAGENTS_RESULTS_DIR=~/.tradingagents/reports/trading-scenarios/<TICKER>/<Datum>[-suffix]` + `TRADINGAGENTS_RESULTS_LAYOUT=run_dir`. Enthält Orchestrierung (News-Pipeline, YAML-Metadaten, `--bg`, `--quick`), Argument-Validierung, LLM-Fallback-Chain und Provenance in einem Prozess/Skript.
-- **Versioniert im Fork-Repo** unter `hermes/skills/hermes-trading-scenarios/` (seit Fork v1.0.4). Hermes lädt die Skill zur Laufzeit aus dem Profilpfad; das Repo ist die versionierte Kopie. Nach jeder Änderung beides in einem Schritt angleichen und pushen: `rsync -a --delete --exclude .git --exclude __pycache__ --exclude .pytest_cache <profil>/skills/hermes-trading-scenarios/ <repo>/hermes/skills/hermes-trading-scenarios/` → Commit → `git push fork main`.
+- **Versioniert im Fork-Repo** unter `hermes/skills/hermes-trading-scenarios/` (seit Fork v1.0.4). Der Profilpfad `$HERMES_HOME/skills/hermes-trading-scenarios` ist ein **Symlink** auf dieses Repo-Verzeichnis — eine Quelle, keine Kopie. Änderungen also direkt im Repo machen, dann `git commit` + `git push fork main`; Hermes liest sie sofort über den Symlink.
 - Referenzen: `scenario-schema.md`, `provider-integration.md`, `market-data-coverage.md`, `post-run-review.md`, `memory-improvement-backlog.md`, `directory-layout.md` (diese Datei).
 - API-Keys: nur Profil-`.env` (0600); Wrapper reicht ausschließlich benötigte Keys an den Kindprozess weiter.
 
