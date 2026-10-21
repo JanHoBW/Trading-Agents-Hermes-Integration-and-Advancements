@@ -125,7 +125,9 @@ def run_quality_gate(report_dir) -> dict:
         check("report_present", False, "complete_report.md missing")
 
     decision = _read(report_dir / "5_portfolio/decision.md")
-    check("decision_present", bool(decision.strip()), "5_portfolio/decision.md is not empty")
+    check("decision_present", bool(decision.strip()),
+          "5_portfolio/decision.md present" if decision.strip()
+          else "5_portfolio/decision.md missing or empty")
     if decision.strip():
         rating = _rating(decision)
         check("decision_rating", rating is not None,
@@ -151,9 +153,11 @@ def run_quality_gate(report_dir) -> dict:
           blocking=False)
 
     coverage_md = _read(report_dir / "6_coverage/coverage.md")
-    check("coverage_windows_named", "Analysis windows" in coverage_md or not coverage_md,
-          "analysis windows printed" if "Analysis windows" in coverage_md else
-          "no 'Analysis windows' line in the coverage section (no trade_date?)",
+    has_windows = "Analysis windows" in coverage_md
+    check("coverage_windows_named", has_windows or not coverage_md,
+          "both windows printed" if has_windows else
+          ("no coverage section written" if not coverage_md else
+           "no 'Analysis windows' line in the coverage section (no trade_date?)"),
           blocking=False)
 
     check("no_data_gaps", not gaps,
