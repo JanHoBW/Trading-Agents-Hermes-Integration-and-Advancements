@@ -178,19 +178,29 @@ def _open_memory_log() -> TradingMemoryLog:
 @memory_app.command("feedback")
 def memory_feedback(
     ticker: str = typer.Argument(..., help="Decision ticker, e.g. RHM.DE"),
-    note: str = typer.Option(..., "--note", "-n", help="What was right or wrong about this decision"),
+    note: str = typer.Option(None, "--note", "-n", help="What was right or wrong about this decision"),
     date: str = typer.Option(None, "--date", "-d", help="Decision date YYYY-MM-DD; omit to annotate the most recent entry of the ticker"),
     rating: str = typer.Option(None, "--rating", "-r", help="gut | teilweise | falsch"),
+    executed: bool = typer.Option(False, "--executed", help="Record that the call was actually acted on"),
+    refused: bool = typer.Option(False, "--refused", help="Record that the call was deliberately not acted on"),
+    reason: str = typer.Option(None, "--reason", help="Why the call was executed or refused (stored with the execution record)"),
 ):
-    """Annotate a decision or outcome by hand (human feedback loop).
+    """Annotate a decision, record what you did with it, or both.
 
-    The annotation is stored on the entry itself (HUMAN_FEEDBACK block),
-    survives settlement rewrites, and is shown to the portfolio manager
-    on the next run of the same ticker. Re-annotating replaces the
-    previous annotation.
+    A note is stored as a HUMAN_FEEDBACK block, an execution decision as an
+    EXECUTION block; both live on the entry itself, survive settlement rewrites
+    and are shown to the portfolio manager on the next run of the same ticker.
+    Re-annotating replaces the previous value. The execution record is what makes
+    "did I actually follow the call?" answerable from the log alone.
     """
     if rating and rating not in _FEEDBACK_RATINGS:
         console.print(f"[red]--rating must be one of: {', '.join(_FEEDBACK_RATINGS)}[/red]")
+        raise typer.Exit(code=1) from None
+    if executed and refused:
+        console.print("[red]--executed and --refused are mutually exclusive[/red]")
+        raise typer.Exit(code=1) from None
+    if not note and not (executed or refused):
+        console.print("[red]Nothing to record: pass --note and/or --executed/--refused[/red]")
         raise typer.Exit(code=1) from None
     log = _open_memory_log()
     entries = [e for e in log.load_entries() if e["ticker"] == ticker]
@@ -205,10 +215,24 @@ def memory_feedback(
     else:
         console.print(f"[red]No entry for {ticker} on {date}[/red]")
         raise typer.Exit(code=1) from None
-    if log.add_human_feedback(ticker, target, note, rating=rating):
-        console.print(f"[green]Annotated {ticker} {target}[/green] — shown to the portfolio manager next run.")
-    else:
-        console.print(f"[yellow]Identical annotation already recorded for {ticker} {target} — nothing changed.[/yellow]")
+
+    changed = False
+    if note:
+        if log.add_human_feedback(ticker, target, note, rating=rating):
+            changed = True
+            console.print(f"[green]Annotated {ticker} {target}[/green] — shown to the portfolio manager next run.")
+        else:
+            console.print(f"[yellow]Identical annotation already recorded for {ticker} {target} — unchanged.[/yellow]")
+    if executed or refused:
+        status = "executed" if executed else "refused"
+        if log.add_execution(ticker, target, status, reason=reason):
+            changed = True
+            console.print(f"[green]Recorded {status} for {ticker} {target}[/green]"
+                          + (f" ({reason})" if reason else "") + ".")
+        else:
+            console.print(f"[yellow]Identical execution record already stored for {ticker} {target} — unchanged.[/yellow]")
+    if not changed:
+        return
 
 
 @memory_app.command("show")
@@ -222,8 +246,13 @@ def memory_show(
     if ticker:
         entries = [e for e in entries if e["ticker"] == ticker]
     for e in list(reversed(entries))[:limit]:
-        state = "pending" if e["pending"] else f"settled (raw {e['raw'] or 'n/a'}, alpha {e['alpha'] or 'n/a'})"
-        console.print(f"[bold]{e['date']} {e['ticker']} {e['rating']}[/bold] — {state}")
+        if e.get("unscorable"):
+            status_text = f"not scorable ({e['unscorable'].get('status')})"
+        elif e["pending"]:
+            status_text = "pending"
+        else:
+            status_text = f"settled (raw {e['raw'] or 'n/a'}, alpha {e['alpha'] or 'n/a'})"
+        console.print(f"[bold]{e['date']} {e['ticker']} {e['rating']}[/bold] — {status_text}")
         horizons = e.get("horizons") or {}
         parts = [f"{h}d raw {v['raw']:+.1%}/alpha {v['alpha']:+.1%}"
                  for h, v in sorted(horizons.items())
@@ -236,6 +265,13 @@ def memory_show(
         if isinstance(hf, dict) and hf.get("vermerk"):
             meta = ", ".join(str(x) for x in (hf.get("datum"), hf.get("bewertung")) if x)
             console.print(f"  [yellow]feedback{(' (' + meta + ')') if meta else ''}:[/yellow] {hf['vermerk']}")
+        ex = e.get("execution")
+        if isinstance(ex, dict) and ex.get("status"):
+            meta = ", ".join(str(x) for x in (ex.get("datum"), ex.get("status")) if x)
+            console.print(f"  [cyan]execution ({meta}):[/cyan] {ex.get('grund') or '—'}")
+        us = e.get("unscorable")
+        if isinstance(us, dict) and us.get("status"):
+            console.print(f"  [red]not scorable ({us['status']}):[/red] {us.get('grund') or '—'}")
 
 
 # The plans `login` and `logout` take: the providers signed in to, not keyed.

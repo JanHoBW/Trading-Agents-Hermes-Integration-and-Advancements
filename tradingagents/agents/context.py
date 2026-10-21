@@ -11,6 +11,9 @@ from tradingagents.dataflows.vendors.yahoo.fundamentals import get_company_profi
 logger = logging.getLogger(__name__)
 
 
+RISK_QUANTIFICATION = """Risk quantification (required): back every stance with numbers that already appear in the inputs above — price levels, the volatility/ATR figures from the market report, and the position size and risk budget from the portfolio context. State the stop distance in % (ATR-based where an ATR figure is given) and what that implies for position size at a stated risk budget (e.g. 1 % of book). For scenario rows use exactly these definitions and say what each would do to THIS position: broad index -10 %, rates +100 bp, oil +20 %, EUR/USD +5 %. If the input needed for a number is missing, write "not available" — never invent a beta, correlation, exposure or sensitivity that the reports did not provide."""
+
+
 def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 

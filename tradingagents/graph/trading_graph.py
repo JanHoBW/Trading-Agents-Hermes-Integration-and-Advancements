@@ -345,6 +345,10 @@ class TradingAgentsGraph:
             if done.failed:
                 note = (f"{len(done.failed)} past decision(s) could not be settled this run "
                         "and stay pending.")
+            if done.unscorable:
+                detail = ", ".join(f"{t} {d} ({s})" for t, d, s in done.unscorable)
+                extra = f"{len(done.unscorable)} past decision(s) marked not scorable: {detail}."
+                note = f"{note} {extra}" if note else extra
         except Exception as exc:
             logger.warning("Settling past decisions failed: %s", exc)
             note = f"Past decisions could not be settled this run ({type(exc).__name__}); they stay pending."

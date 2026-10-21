@@ -9,8 +9,28 @@ from datetime import date, datetime, timedelta
 
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.market import get_closes
+from tradingagents.dataflows.vendors.yahoo.market import PRICE_ADJUSTMENT
 
 logger = logging.getLogger(__name__)
+
+# A missing price series is only terminal once the window is clearly past: a new
+# listing or a vendor hiccup must keep the entry pending, not brand it delisted.
+UNSCORABLE_AFTER_DAYS = 30
+
+
+class UnscorableError(Exception):
+    """A decision that can never be scored, because the data does not exist.
+
+    Distinct from "not yet": a transient fetch failure leaves the entry pending
+    and is retried on the next pass. A delisted instrument or an absent benchmark
+    series never fixes itself, so retrying would keep the entry pending forever;
+    the caller records it as a terminal status instead.
+    """
+
+    def __init__(self, status: str, reason: str):
+        super().__init__(reason)
+        self.status = status      # "delisted" | "benchmark_missing"
+        self.reason = reason
 
 
 def resolve_benchmark(ticker: str, config: dict) -> str:
@@ -109,10 +129,21 @@ def fetch_returns(
     # Closes for the instrument the analysis priced (XAUUSD -> GC=F, #984),
     # from the first session after the decision date.
     stock = _by_day(get_closes(ticker, trade_date, end_str))
+    if stock.empty and _grace_elapsed(start):
+        raise UnscorableError(
+            "delisted",
+            f"no price bars for {ticker} on or after {trade_date} "
+            f"({(date.today() - start.date()).days} days after the decision)",
+        )
     stock = stock[stock.index > start]
     # From a week earlier, so the benchmark has a close on or before entry.
     bench_start = (start - timedelta(days=7)).strftime("%Y-%m-%d")
     bench = _by_day(get_closes(benchmark, bench_start, end_str))
+    if bench.empty and _grace_elapsed(start):
+        raise UnscorableError(
+            "benchmark_missing",
+            f"no price bars for benchmark {benchmark} around {trade_date}",
+        )
 
     # Require the full holding window to have traded. A rerun before it has
     # leaves the entry pending to retry next run, rather than settling on a
@@ -135,6 +166,11 @@ def fetch_returns(
     # injecting the lesson (#1251).
     resolution_date = exit_.strftime("%Y-%m-%d")
     return raw, alpha, holding_days, resolution_date
+
+
+def _grace_elapsed(start: datetime) -> bool:
+    """Has the window been over long enough for a *missing* series to be terminal?"""
+    return (date.today() - start.date()).days > UNSCORABLE_AFTER_DAYS
 
 
 def _window_can_be_closed(trade_date: str, holding_days: int, today: str) -> bool:
@@ -173,6 +209,7 @@ class Settlement:
 
     settled: list[tuple[str, str]] = field(default_factory=list)        # (ticker, date)
     failed: list[tuple[str, str, str]] = field(default_factory=list)    # (ticker, date, reason)
+    unscorable: list[tuple[str, str, str]] = field(default_factory=list)  # (ticker, date, status)
 
 
 def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool = True) -> Settlement:
@@ -217,14 +254,22 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                     continue
                 try:
                     results = fetch_horizons(ticker, entry["date"], missing, benchmark=benchmark)
+                except UnscorableError as exc:
+                    # Terminal: no price series or no benchmark. Retrying would
+                    # leave the entry pending for every future run, so record the
+                    # status and stop.
+                    memory_log.mark_unscorable(ticker, entry["date"], exc.status, exc.reason)
+                    result.unscorable.append((ticker, entry["date"], exc.status))
+                    continue
                 except Exception as exc:
                     logger.warning("Prices for settling %s on %s were unavailable: %s", ticker, entry["date"], exc)
                     result.failed.append((ticker, entry["date"], f"prices unavailable: {exc}"))
                     continue
-                new = {h: r for h, r in results.items() if r[0] is not None}
+                new = {h: (*r, PRICE_ADJUSTMENT) for h, r in results.items() if r[0] is not None}
                 if anchor not in new:
                     continue  # anchor window hasn't fully traded yet
-                new_dicts = {h: {"raw": r[0], "alpha": r[1], "resolution": r[3]}
+                new_dicts = {h: {"raw": r[0], "alpha": r[1], "resolution": r[3],
+                                 "adjustment": PRICE_ADJUSTMENT}
                              for h, r in new.items()}
                 scored_now = {**scored, **new_dicts}
                 try:
@@ -259,12 +304,17 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
             if missing:
                 try:
                     results = fetch_horizons(ticker, entry["date"], missing, benchmark=benchmark)
+                except UnscorableError as exc:
+                    memory_log.mark_unscorable(ticker, entry["date"], exc.status, exc.reason)
+                    result.unscorable.append((ticker, entry["date"], exc.status))
+                    continue
                 except Exception as exc:
                     logger.warning("Prices for settling %s on %s were unavailable: %s", ticker, entry["date"], exc)
                     result.failed.append((ticker, entry["date"], f"prices unavailable: {exc}"))
                     continue
-                new = {h: r for h, r in results.items() if r[0] is not None}
-            new_dicts = {h: {"raw": r[0], "alpha": r[1], "resolution": r[3]}
+                new = {h: (*r, PRICE_ADJUSTMENT) for h, r in results.items() if r[0] is not None}
+            new_dicts = {h: {"raw": r[0], "alpha": r[1], "resolution": r[3],
+                             "adjustment": PRICE_ADJUSTMENT}
                          for h, r in new.items()}
             scored_now = {**scored, **new_dicts}
             needs_refresh = bool(set(scored_now) - covers)
@@ -312,4 +362,5 @@ def settle_all_pending(memory_log, reflector, config: dict, wait: bool = True) -
         done = settle_pending(ticker, memory_log, reflector, config, wait=wait)
         result.settled.extend(done.settled)
         result.failed.extend(done.failed)
+        result.unscorable.extend(done.unscorable)
     return result

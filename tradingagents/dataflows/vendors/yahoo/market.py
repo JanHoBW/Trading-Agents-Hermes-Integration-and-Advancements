@@ -276,8 +276,18 @@ def get_stockstats_indicator(
     return str(indicator_value)
 
 
+# Everything settlement scores uses split/dividend-adjusted closes (yfinance's
+# auto_adjust default). Recorded with each outcome so the price basis is explicit.
+PRICE_ADJUSTMENT = "adjusted"
+
+
 def get_closes(symbol: str, start_date: str, end_date: str) -> pd.Series:
-    """Daily closes from ``start_date`` up to, not including, ``end_date``."""
+    """Daily closes from ``start_date`` up to, not including ``end_date``.
+
+    ``yf.Ticker.history`` defaults to ``auto_adjust=True``, so these are
+    split/dividend-adjusted closes (``PRICE_ADJUSTMENT``). Settlement stores that
+    label with every scored horizon, so an outcome states its price basis.
+    """
     canonical = normalize_symbol(symbol)
     history = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_date))
     return history["Close"] if history is not None and "Close" in history else pd.Series(dtype=float)

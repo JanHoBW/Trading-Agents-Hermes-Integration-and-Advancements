@@ -20,8 +20,8 @@ class TradingMemoryLog:
     # The DECISION regex must stop before it, otherwise the JSON leaks into the
     # decision text; REFLECTION_JSON (one line) is the machine-readable
     # lesson, REFLECTION the final section (greedy to end).
-    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\n(?:HORIZONS|REALIZED|REFLECTION_COVERS|REFLECTION_JSON|REFLECTION|HUMAN_FEEDBACK):|\Z)", re.DOTALL)
-    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)(?=\nHUMAN_FEEDBACK:|\Z)", re.DOTALL)
+    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\n(?:HORIZONS|REALIZED|REFLECTION_COVERS|REFLECTION_JSON|REFLECTION|HUMAN_FEEDBACK|EXECUTION|UNSCORABLE):|\Z)", re.DOTALL)
+    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)(?=\n(?:HUMAN_FEEDBACK|EXECUTION|UNSCORABLE):|\Z)", re.DOTALL)
     _HORIZONS_RE = re.compile(r"HORIZONS:\n(.*)")
     _REALIZED_RE = re.compile(r"REALIZED:\n(.*)")
     _REFLECTION_COVERS_RE = re.compile(r"REFLECTION_COVERS:\n(.*)")
@@ -32,6 +32,13 @@ class TradingMemoryLog:
     # stored at the end of the entry. The regexes above are order-
     # independent, so the line may sit before or after REFLECTION.
     _HUMAN_FEEDBACK_RE = re.compile(r"HUMAN_FEEDBACK:\n([^\n]*)")
+    # What the human actually did with the call (backlog #10): one JSON line,
+    # stored next to the feedback annotation and preserved by settlement.
+    _EXECUTION_RE = re.compile(r"EXECUTION:\n([^\n]*)")
+    # Terminal reason an entry can never be scored (delisted instrument, no
+    # benchmark series): one JSON line so the entry stops being retried and the
+    # reader can see why it has no outcome.
+    _UNSCORABLE_RE = re.compile(r"UNSCORABLE:\n([^\n]*)")
 
     def __init__(self, config: dict = None):
         cfg = config or {}
@@ -134,10 +141,14 @@ class TradingMemoryLog:
         trade out and finalize); resolved but a configured horizon is not yet
         measured; or resolved and its stored lesson lags the windows measured so
         far (the multi-horizon lesson is refreshed as longer windows close).
+        Entries marked unscorable (delisted instrument, missing benchmark) are
+        excluded — they can never settle and must not be retried forever.
         """
         anchor = horizons[0]
         out = []
         for e in self.load_entries():
+            if e.get("unscorable"):
+                continue
             hz = e.get("horizons") or {}
             if e.get("pending"):
                 out.append(e)
@@ -165,13 +176,13 @@ class TradingMemoryLog:
         filter, so live runs and pre-migration entries are unaffected.
 
         Pending entries are normally excluded (no verified outcome), but a
-        pending entry that carries a human annotation (backlog #8) is
-        included: the annotation is the human's own verdict on the call and
-        is valid before settlement, so the feedback loop can close on the
-        very next run instead of waiting out the anchor horizon.
+        pending entry that carries a human annotation (backlog #8) or an
+        execution record (backlog #10) is included: the annotation and what the
+        human actually did are valid before settlement, so the feedback loop can
+        close on the very next run instead of waiting out the anchor horizon.
         """
         entries = [e for e in self.load_entries()
-                   if not e.get("pending") or e.get("human_feedback")]
+                   if not e.get("pending") or e.get("human_feedback") or e.get("execution")]
         if as_of is not None:
             entries = [e for e in entries if e.get("resolved") and e["resolved"] <= as_of]
         if not entries:
@@ -321,8 +332,11 @@ class TradingMemoryLog:
                 }
                 hz = self._parse_horizons(body, legacy)
                 for h, r in horizon_results.items():
-                    raw, alpha, _days, res = r
-                    hz[int(h)] = {"raw": raw, "alpha": alpha, "resolution": res}
+                    raw, alpha, _days, res = r[:4]
+                    # An optional 5th element records the price basis; older
+                    # callers pass a 4-tuple and get no field.
+                    extra = {"adjustment": r[4]} if len(r) > 4 else {}
+                    hz[int(h)] = {"raw": raw, "alpha": alpha, "resolution": res, **extra}
                 dm = self._DECISION_RE.search(body)
                 decision = dm.group(1).strip() if dm else ""
                 # Finalise only when the caller names the anchor horizon explicitly.
@@ -367,6 +381,13 @@ class TradingMemoryLog:
                 if isinstance(human_feedback_val, dict) and human_feedback_val:
                     new_block += ("\n\nHUMAN_FEEDBACK:\n"
                                   + json.dumps(human_feedback_val, ensure_ascii=False, sort_keys=True))
+                # Execution record (backlog #10): what the human did with the
+                # call survives settlement like the annotation does.
+                exm = self._EXECUTION_RE.search(body)
+                execution_val = self._parse_json_line(exm.group(1) if exm else None)
+                if isinstance(execution_val, dict) and execution_val:
+                    new_block += ("\n\nEXECUTION:\n"
+                                  + json.dumps(execution_val, ensure_ascii=False, sort_keys=True))
                 blocks[i] = new_block
                 updated = True
                 break
@@ -424,6 +445,99 @@ class TradingMemoryLog:
             if updated:
                 self._atomic_write(self._SEPARATOR.join(blocks))
         return updated
+
+    def add_execution(self, ticker: str, trade_date: str, status: str,
+                      reason: str | None = None,
+                      execution_date: str | None = None) -> bool:
+        """Record what the human actually did with one decision (backlog #10).
+
+        ``status`` is ``executed`` or ``refused``. Stored as a one-line
+        EXECUTION JSON block, so the log can answer "how often did I follow the
+        call?" without a separate ledger, and so a refusal's reason is not lost.
+        Survives settlement rewrites (``merge_horizons`` carries it over).
+        Returns whether the log changed.
+        """
+        if status not in ("executed", "refused"):
+            raise ValueError("execution status must be 'executed' or 'refused'")
+        payload: dict = {"datum": execution_date or date.today().isoformat(),
+                         "status": status}
+        if reason and reason.strip():
+            payload["grund"] = reason.strip()
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return self._upsert_block(ticker, trade_date, "EXECUTION", line) == "updated"
+
+    def _upsert_block(self, ticker: str, trade_date: str, marker: str, line: str) -> str:
+        """Insert or replace one one-line JSON block on an entry.
+
+        Returns ``updated``, ``same`` (identical block already present) or
+        ``missing`` (no such entry). Parsing is order-independent, so replacing
+        simply strips the old block and appends the new one at the end.
+        """
+        if not self._log_path or not self._log_path.exists():
+            return "missing"
+        full_marker = "\n\n" + marker + ":\n"
+        with locked(self._log_path):
+            text = self._log_path.read_text(encoding="utf-8")
+            blocks = text.split(self._SEPARATOR)
+            prefix = f"[{trade_date} | {ticker} |"
+            for i, block in enumerate(blocks):
+                if not block.strip():
+                    continue
+                tag_line = block.strip().splitlines()[0].strip()
+                if not (tag_line.startswith(prefix) and tag_line.endswith("]")):
+                    continue
+                stripped = block.rstrip()
+                cut = stripped.rfind(full_marker)
+                if cut != -1:
+                    if stripped[cut + len(full_marker):].strip() == line:
+                        return "same"
+                    stripped = stripped[:cut].rstrip()
+                blocks[i] = stripped + full_marker + line
+                self._atomic_write(self._SEPARATOR.join(blocks))
+                return "updated"
+        return "missing"
+
+    def mark_unscorable(self, ticker: str, trade_date: str, status: str,
+                        reason: str = "") -> bool:
+        """Mark a pending entry as never scorable, with the reason on the entry.
+
+        ``status`` is ``delisted`` (the instrument has no prices after the
+        decision) or ``benchmark_missing`` (its benchmark series is absent).
+        Both are terminal: without this, such an entry stays pending forever and
+        is retried on every run. The tag keeps its date/ticker/rating fields so
+        rotation and point-in-time filtering keep working; the outcome fields are
+        replaced by ``unscorable:<status>`` and the reason is stored as an
+        UNSCORABLE JSON block for audit.
+        """
+        if status not in ("delisted", "benchmark_missing"):
+            raise ValueError("status must be 'delisted' or 'benchmark_missing'")
+        if not self._log_path or not self._log_path.exists():
+            return False
+        payload = {"datum": date.today().isoformat(), "status": status,
+                   "grund": (reason or status).strip()}
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        with locked(self._log_path):
+            text = self._log_path.read_text(encoding="utf-8")
+            blocks = text.split(self._SEPARATOR)
+            prefix = f"[{trade_date} | {ticker} |"
+            for i, block in enumerate(blocks):
+                if not block.strip():
+                    continue
+                lines = block.strip().splitlines()
+                tag_line = lines[0].strip()
+                if not (tag_line.startswith(prefix) and tag_line.endswith("| pending]")):
+                    continue
+                fields = [f.strip() for f in tag_line[1:-1].split("|")]
+                body = "\n".join(lines[1:]).rstrip()
+                new_tag = (f"[{fields[0]} | {fields[1]} | {fields[2]} | "
+                           f"unscorable:{status}]")
+                # An old UNSCORABLE line never survives a re-mark.
+                body = re.sub(r"\n*UNSCORABLE:\n[^\n]*", "", body).rstrip()
+                new_block = new_tag + (("\n\n" + body) if body else "") + "\n\nUNSCORABLE:\n" + line
+                blocks[i] = new_block
+                self._atomic_write(self._SEPARATOR.join(blocks))
+                return True
+        return False
 
     def merge_realized(self, ticker: str, trade_date: str, realized_return,
                        close_date: str | None = None, note: str | None = None) -> bool:
@@ -610,6 +724,17 @@ class TradingMemoryLog:
         return data if isinstance(data, dict) and data else None
 
     @staticmethod
+    def _parse_json_line(body: str | None) -> dict | None:
+        """Parse a one-line JSON annotation (EXECUTION / UNSCORABLE) into a dict."""
+        if body is None or not body.strip():
+            return None
+        try:
+            data = json.loads(body.strip())
+        except (ValueError, TypeError):
+            return None
+        return data if isinstance(data, dict) and data else None
+
+    @staticmethod
     def _parse_human_feedback(body: str | None) -> dict | None:
         """Parse a HUMAN_FEEDBACK line into the annotation dict."""
         if body is None:
@@ -628,7 +753,10 @@ class TradingMemoryLog:
             try:
                 data = json.loads(m.group(1).strip())
                 return {int(k): {"raw": v.get("raw"), "alpha": v.get("alpha"),
-                                 "resolution": v.get("resolution")}
+                                 "resolution": v.get("resolution"),
+                                 # price basis (adjusted/unadjusted); None on
+                                 # entries scored before the field existed
+                                 "adjustment": v.get("adjustment")}
                         for k, v in data.items()}
             except (ValueError, AttributeError, TypeError):
                 return {}
@@ -659,15 +787,20 @@ class TradingMemoryLog:
         for f in fields[6:]:
             if f.startswith("resolved:"):
                 resolved = f[len("resolved:"):].strip()
+        # Field 4 is either "pending", a return figure, or "unscorable:<why>".
+        status_field = fields[3]
+        unscorable_status = (status_field.split(":", 1)[1].strip()
+                             if status_field.startswith("unscorable:") else None)
         entry = {
             "date": fields[0],
             "ticker": fields[1],
             "rating": fields[2],
-            "pending": fields[3] == "pending",
-            "raw": fields[3] if fields[3] != "pending" else None,
+            "pending": status_field == "pending",
+            "raw": None if (status_field == "pending" or unscorable_status) else status_field,
             "alpha": fields[4] if len(fields) > 4 else None,
             "holding": fields[5] if len(fields) > 5 else None,
             "resolved": resolved,
+            "unscorable_status": unscorable_status,
         }
         body = "\n".join(lines[1:]).strip()
         decision_match = self._DECISION_RE.search(body)
@@ -684,6 +817,14 @@ class TradingMemoryLog:
         hf_match = self._HUMAN_FEEDBACK_RE.search(body)
         entry["human_feedback"] = self._parse_human_feedback(
             hf_match.group(1) if hf_match else None)
+        ex_match = self._EXECUTION_RE.search(body)
+        entry["execution"] = self._parse_json_line(ex_match.group(1) if ex_match else None)
+        us_match = self._UNSCORABLE_RE.search(body)
+        entry["unscorable"] = self._parse_json_line(us_match.group(1) if us_match else None)
+        if entry["unscorable_status"] and not entry["unscorable"]:
+            # A tag can outlive its block (hand-edited log); the tag is enough
+            # to stop the retry loop, the block only adds the reason.
+            entry["unscorable"] = {"status": entry["unscorable_status"]}
         realized_match = self._REALIZED_RE.search(body)
         entry["realized"] = self._parse_realized(
             realized_match.group(1) if realized_match else None)
@@ -713,6 +854,15 @@ class TradingMemoryLog:
         if isinstance(hf, dict) and hf.get("vermerk"):
             meta = ", ".join(str(x) for x in (hf.get("datum"), hf.get("bewertung")) if x)
             parts.append(f"HUMAN FEEDBACK{(' (' + meta + ')') if meta else ''}\n{hf['vermerk']}")
+        ex = e.get("execution")
+        if isinstance(ex, dict) and ex.get("status"):
+            meta = ", ".join(str(x) for x in (ex.get("datum"), ex.get("status")) if x)
+            reason = f" — {ex['grund']}" if ex.get("grund") else ""
+            parts.append(f"EXECUTION ({meta}){reason}")
+        us = e.get("unscorable")
+        if isinstance(us, dict) and us.get("status"):
+            reason = f" — {us['grund']}" if us.get("grund") else ""
+            parts.append(f"NOT SCORABLE ({us['status']}){reason}")
         return "\n\n".join(parts)
 
     @staticmethod

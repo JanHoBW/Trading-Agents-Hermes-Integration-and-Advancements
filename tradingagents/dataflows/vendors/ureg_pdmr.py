@@ -260,18 +260,6 @@ def _extract_publication_rows(html: str) -> list[dict]:
     return rows
 
 
-def _extract_pdmr_rows(html: str) -> list[dict]:
-    """Return PDMR rows (category 80) with list-level fields.
-
-    Each row: sourceDate (disclosure date, verified == detail's
-    "Pflichtveröffentlichung am"), companyNameAtTimeOfPublication (the
-    per-emitter validation key), encryptedPayload (the /api/pub-html
-    accessor), language.
-    """
-    return [r for r in _extract_publication_rows(html)
-            if r["category"] == PDMR_CATEGORY_ID]
-
-
 # ---------------------------------------------------------------------------
 # Detail parsing (/api/pub-html)
 # ---------------------------------------------------------------------------
