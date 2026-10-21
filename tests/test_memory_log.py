@@ -540,13 +540,20 @@ class TestDeferredReflection:
         assert (raw, alpha, days, resolved) == (None, None, None, None)
 
     def test_fetch_returns_delisted(self):
-        """Empty DataFrame → returns all-None, no crash."""
+        """An empty series long after the decision is terminal, not pending forever.
+
+        Deliberate behaviour change: a decision whose instrument has no price bars
+        at all, well past its window, used to return all-None and be retried on
+        every run. It is now reported as an unscorable status the caller records.
+        """
         with patch("yfinance.Ticker") as mock_ticker_cls:
             m = MagicMock()
             m.history.return_value = pd.DataFrame({"Close": []})
             mock_ticker_cls.return_value = m
-            raw, alpha, days, resolved = settlement.fetch_returns("XXXXXFAKE", "2026-01-10")
-        assert (raw, alpha, days, resolved) == (None, None, None, None)
+            with pytest.raises(settlement.UnscorableError) as ctx:
+                settlement.fetch_returns("XXXXXFAKE", "2026-01-10")
+        assert ctx.value.status == "delisted"
+        assert "no price bars" in ctx.value.reason
 
     def test_fetch_returns_spy_shorter_than_stock(self):
         """SPY having fewer rows than the stock (but still a full window) must

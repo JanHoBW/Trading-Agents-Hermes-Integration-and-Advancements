@@ -29,7 +29,8 @@ def _fixture(name: str) -> str:
 class SearchRowExtractionTests(unittest.TestCase):
     def setUp(self):
         self.html = _fixture("ureg_search_sap_p1.html")
-        self.rows = u._extract_pdmr_rows(self.html)
+        self.rows = [r for r in u._extract_publication_rows(self.html)
+                     if r["category"] == u.PDMR_CATEGORY_ID]
 
     def test_only_pdmr_category_rows_are_extracted(self):
         # the fixture page holds 30 publication rows (18 cat 80 + 12 cat 83);
