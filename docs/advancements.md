@@ -135,7 +135,7 @@ One wrapper instead of two — and the skill that drives it is versioned in this
 - End to end: RHM.DE 2026-10-21, `openai/gpt-6-luna` at `xhigh` through the
   `custom` profile (OpenRouter), debate 1 / risk 2 → rc=0 in 610 s, 26 report
   files, `provenance.json` and the data-coverage block written. LM Studio on
-  pc-finn was offline, which is what the custom profile is for.
+  the local LM Studio host was offline, which is what the custom profile is for.
 
 ## [Fork v1.0.3] — 2026-10-20
 

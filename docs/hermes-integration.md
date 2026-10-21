@@ -117,7 +117,7 @@ an analysis, for a scheduled job.
 
   ```csv
   ticker,shares,entry_date,entry_price,close_date,close_price,note
-  RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,cut first tranche at stop
+  XYZ.DE,50,2026-01-15,100.00,2026-03-01,110.00,cut first tranche at stop
   ```
 
   Closed rows (both close fields filled) record their **realized return** as

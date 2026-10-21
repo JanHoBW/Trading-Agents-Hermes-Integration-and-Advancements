@@ -53,7 +53,7 @@ def _get_closes_stub(by_symbol):
 @pytest.mark.unit
 class TestNum:
     def test_plain(self):
-        assert realized._num("950.00") == 950.0
+        assert realized._num("90.00") == 90.0
 
     def test_thousands_separator(self):
         assert realized._num("1,234.56") == 1234.56
@@ -63,7 +63,7 @@ class TestNum:
         assert realized._num("12,5") == 12.5
 
     def test_currency_tail(self):
-        assert realized._num("950.00 EUR") == 950.0
+        assert realized._num("90.00 EUR") == 90.0
 
     def test_blank_and_na(self):
         assert realized._num("") is None
@@ -84,40 +84,40 @@ class TestLoadPositions:
     def test_parses_open_and_closed(self, tmp_path):
         p = write_portfolio(tmp_path,
                             "# a comment\n"
-                            "RHM.DE,20,2026-10-09,983.30,,\n"
+                            "RHM.DE,20,2026-01-15,100.00,,\n"
                             "\n"
-                            "RHM.DE,15,2026-10-09,983.30,2026-12-01,950.00,Tranche 1\n")
+                            "RHM.DE,15,2026-01-15,100.00,2026-03-01,90.00,Tranche 1\n")
         pos = realized.load_positions(p)
         assert len(pos) == 2
         assert pos[0].is_closed is False
         assert pos[1].is_closed is True
-        assert pos[1].realized_return == pytest.approx((950.0 - 983.30) / 983.30)
-        assert pos[1].realized_pnl == pytest.approx((950.0 - 983.30) * 15)
+        assert pos[1].realized_return == pytest.approx((90.0 - 100.00) / 100.00)
+        assert pos[1].realized_pnl == pytest.approx((90.0 - 100.00) * 15)
 
     def test_case_insensitive_ticker_and_header(self, tmp_path):
         p = tmp_path / "p.csv"
         p.write_text("Ticker,Shares,Entry_Date,Entry_Price,Close_Date,Close_Price,Note\n"
-                     "rhM.de,10,2026-10-09,100.0,2026-11-01,110.0,\n", encoding="utf-8")
+                     "rhM.de,10,2026-01-15,100.0,2026-11-01,110.0,\n", encoding="utf-8")
         pos = realized.load_positions(p)
         assert len(pos) == 1
         assert pos[0].ticker == "RHM.DE"
 
     def test_half_filled_close_stays_open(self, tmp_path):
-        p = write_portfolio(tmp_path, "RHM.DE,10,2026-10-09,100.0,2026-11-01,,\n")
+        p = write_portfolio(tmp_path, "RHM.DE,10,2026-01-15,100.0,2026-11-01,,\n")
         pos = realized.load_positions(p)
         assert len(pos) == 1
         assert pos[0].is_closed is False
-        p2 = write_portfolio(tmp_path, "RHM.DE,10,2026-10-09,100.0,,55.5\n", name="p2.csv")
+        p2 = write_portfolio(tmp_path, "RHM.DE,10,2026-01-15,100.0,,55.5\n", name="p2.csv")
         pos2 = realized.load_positions(p2)
         assert pos2[0].is_closed is False  # price without a date
 
     def test_unvaluable_rows_skipped(self, tmp_path):
         p = write_portfolio(tmp_path,
-                            ",10,2026-10-09,100.0,,\n"            # no ticker
-                            "A.DE,0,2026-10-09,100.0,,\n"         # zero shares
-                            "B.DE,10,2026-10-09,0,,\n"           # zero entry price
+                            ",10,2026-01-15,100.0,,\n"            # no ticker
+                            "A.DE,0,2026-01-15,100.0,,\n"         # zero shares
+                            "B.DE,10,2026-01-15,0,,\n"           # zero entry price
                             "C.DE,10,bad-date,100.0,,\n"
-                            "D.DE,10,2026-10-09,100.0,,\n")
+                            "D.DE,10,2026-01-15,100.0,,\n")
         pos = realized.load_positions(p)
         # "bad-date" rows are kept (dates are not validated numerically here);
         # the first three rows are dropped.
@@ -129,7 +129,7 @@ class TestLoadPositions:
 
     def test_missing_column_raises(self, tmp_path):
         p = tmp_path / "bad.csv"
-        p.write_text("ticker,shares,entry_date\nRHM.DE,10,2026-10-09\n", encoding="utf-8")
+        p.write_text("ticker,shares,entry_date\nRHM.DE,10,2026-01-15\n", encoding="utf-8")
         with pytest.raises(ValueError, match="entry_price"):
             realized.load_positions(p)
 
@@ -139,7 +139,7 @@ class TestLoadPositions:
         assert realized.load_positions(p) == []
 
     def test_quoted_note_with_comma(self, tmp_path):
-        p = write_portfolio(tmp_path, 'RHM.DE,10,2026-10-09,100.0,2026-11-01,110.0,"cut, tranche 1"\n')
+        p = write_portfolio(tmp_path, 'RHM.DE,10,2026-01-15,100.0,2026-11-01,110.0,"cut, tranche 1"\n')
         pos = realized.load_positions(p)
         assert pos[0].note == "cut, tranche 1"
 
@@ -151,9 +151,9 @@ class TestLoadPositions:
 @pytest.mark.unit
 class TestAggregation:
     def test_tranches_weighted(self):
-        a = realized.RealizedTrade("RHM.DE", 10, "2026-10-09", 100.0, "2026-11-01", 110.0)
-        b = realized.RealizedTrade("RHM.DE", 30, "2026-10-09", 110.0, "2026-11-05", 105.0)
-        open_ = realized.RealizedTrade("RHM.DE", 50, "2026-10-09", 100.0)  # open
+        a = realized.RealizedTrade("RHM.DE", 10, "2026-01-15", 100.0, "2026-11-01", 110.0)
+        b = realized.RealizedTrade("RHM.DE", 30, "2026-01-15", 110.0, "2026-11-05", 105.0)
+        open_ = realized.RealizedTrade("RHM.DE", 50, "2026-01-15", 100.0)  # open
         agg = realized.aggregate_closed([a, b, open_])
         assert len(agg) == 1
         t = agg[0]
@@ -164,9 +164,9 @@ class TestAggregation:
 
     def test_load_realized_trades_closed_only(self, tmp_path):
         p = write_portfolio(tmp_path,
-                            "A.DE,10,2026-10-09,100.0,,\n"
-                            "A.DE,10,2026-10-09,100.0,2026-11-01,110.0,\n"
-                            "B.DE,10,2026-10-09,100.0,2026-11-01,90.0,\n")
+                            "A.DE,10,2026-01-15,100.0,,\n"
+                            "A.DE,10,2026-01-15,100.0,2026-11-01,110.0,\n"
+                            "B.DE,10,2026-01-15,100.0,2026-11-01,90.0,\n")
         trades = realized.load_realized_trades(p)
         assert [t.ticker for t in trades] == ["A.DE", "B.DE"]
         assert trades[0].realized_return == pytest.approx(0.10)
@@ -186,64 +186,64 @@ class TestRecord:
 
     def test_records_closed_for_existing_entry(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,am Stop\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,am Stop\n")
         cfg = port_config(p)
         recorded = realized.record_realized_trades(log, cfg)
-        assert recorded == [("RHM.DE", "2026-10-09", pytest.approx((950.0 - 983.30) / 983.30))]
+        assert recorded == [("RHM.DE", "2026-01-15", pytest.approx((90.0 - 100.00) / 100.00))]
         entry = next(e for e in log.load_entries()
-                     if e["ticker"] == "RHM.DE" and e["date"] == "2026-10-09")
-        assert entry["realized"]["return"] == pytest.approx((950.0 - 983.30) / 983.30)
-        assert entry["realized"]["close_date"] == "2026-12-01"
+                     if e["ticker"] == "RHM.DE" and e["date"] == "2026-01-15")
+        assert entry["realized"]["return"] == pytest.approx((90.0 - 100.00) / 100.00)
+        assert entry["realized"]["close_date"] == "2026-03-01"
         assert entry["realized"]["note"] == "am Stop"
         # pending is not flipped by a realized record (it is not the anchor)
         assert entry["pending"] is True
 
     def test_idempotent_second_pass(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n")
         cfg = port_config(p)
         assert realized.record_realized_trades(log, cfg)
         assert realized.record_realized_trades(log, cfg) == []  # same return -> no-op
 
     def test_rerecords_when_return_changes(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n")
         cfg = port_config(p)
         realized.record_realized_trades(log, cfg)
         # user re-sells the rest at a different price (different aggregate return)
-        Path(p).write_text(HEADER + "RHM.DE,20,2026-10-09,983.30,2026-12-15,910.00,\n", encoding="utf-8")
+        Path(p).write_text(HEADER + "RHM.DE,20,2026-01-15,100.00,2026-03-15,95.00,\n", encoding="utf-8")
         recorded = realized.record_realized_trades(log, cfg)
         assert len(recorded) == 1
-        assert recorded[0][2] == pytest.approx((910.0 - 983.30) / 983.30)
+        assert recorded[0][2] == pytest.approx((95.0 - 100.00) / 100.00)
         entry = next(e for e in log.load_entries()
-                     if e["ticker"] == "RHM.DE" and e["date"] == "2026-10-09")
-        assert entry["realized"]["return"] == pytest.approx((910.0 - 983.30) / 983.30)
-        assert entry["realized"]["close_date"] == "2026-12-15"
+                     if e["ticker"] == "RHM.DE" and e["date"] == "2026-01-15")
+        assert entry["realized"]["return"] == pytest.approx((95.0 - 100.00) / 100.00)
+        assert entry["realized"]["close_date"] == "2026-03-15"
 
     def test_ignores_positions_the_model_never_analysed(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        p = write_portfolio(tmp_path, "ZZZ.DE,10,2026-10-09,100.0,2026-11-01,110.0,\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        p = write_portfolio(tmp_path, "ZZZ.DE,10,2026-01-15,100.0,2026-11-01,110.0,\n")
         assert realized.record_realized_trades(log, port_config(p)) == []
         assert all(e["ticker"] != "ZZZ.DE" for e in log.load_entries())
 
     def test_ignores_open_positions(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_BUY)
-        p = write_portfolio(tmp_path, "RHM.DE,10,2026-10-09,100.0,,\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_BUY)
+        p = write_portfolio(tmp_path, "RHM.DE,10,2026-01-15,100.0,,\n")
         assert realized.record_realized_trades(log, port_config(p)) == []
 
     def test_malformed_file_is_a_noop(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
         p = tmp_path / "bad.csv"
-        p.write_text("ticker,shares,entry_date\nRHM.DE,10,2026-10-09\n", encoding="utf-8")
+        p.write_text("ticker,shares,entry_date\nRHM.DE,10,2026-01-15\n", encoding="utf-8")
         assert realized.record_realized_trades(log, port_config(str(p))) == []
         entry = next(e for e in log.load_entries()
-                     if e["ticker"] == "RHM.DE" and e["date"] == "2026-10-09")
+                     if e["ticker"] == "RHM.DE" and e["date"] == "2026-01-15")
         assert entry["realized"] is None
 
 
@@ -255,15 +255,15 @@ class TestRecord:
 class TestAttribute:
     def test_joins_pnl_and_hit(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        log.store_decision("A.DE", "2026-10-09", DECISION_BUY)
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        log.store_decision("A.DE", "2026-01-15", DECISION_BUY)
         p = write_portfolio(tmp_path,
-                            "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n"
-                            "A.DE,10,2026-10-09,100.0,2026-11-01,110.0,\n")
+                            "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n"
+                            "A.DE,10,2026-01-15,100.0,2026-11-01,110.0,\n")
         out = realized.attribute_realized(log, port_config(p))
         by_t = {a["ticker"]: a for a in out}
         assert by_t["RHM.DE"]["hit"] is True    # sold, it fell
-        assert by_t["RHM.DE"]["pnl"] == pytest.approx((950.0 - 983.30) * 20)
+        assert by_t["RHM.DE"]["pnl"] == pytest.approx((90.0 - 100.00) * 20)
         assert by_t["RHM.DE"]["rating"] == "Sell"
         assert by_t["A.DE"]["hit"] is True      # bought, it rose
         assert by_t["A.DE"]["pnl"] == pytest.approx(100.0)
@@ -271,20 +271,20 @@ class TestAttribute:
 
     def test_wrong_direction_is_a_miss(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("A.DE", "2026-10-09", DECISION_BUY)
-        p = write_portfolio(tmp_path, "A.DE,10,2026-10-09,100.0,2026-11-01,90.0,\n")
+        log.store_decision("A.DE", "2026-01-15", DECISION_BUY)
+        p = write_portfolio(tmp_path, "A.DE,10,2026-01-15,100.0,2026-11-01,90.0,\n")
         out = realized.attribute_realized(log, port_config(p))
         assert out[0]["hit"] is False
 
     def test_skips_unanalysed(self, tmp_path):
         log = make_log(tmp_path)
-        p = write_portfolio(tmp_path, "ZZZ.DE,10,2026-10-09,100.0,2026-11-01,110.0,\n")
+        p = write_portfolio(tmp_path, "ZZZ.DE,10,2026-01-15,100.0,2026-11-01,110.0,\n")
         assert realized.attribute_realized(log, port_config(p)) == []
 
     def test_as_of_drops_future_closes(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("A.DE", "2026-10-09", DECISION_BUY)
-        p = write_portfolio(tmp_path, "A.DE,10,2026-10-09,100.0,2026-11-01,110.0,\n")
+        log.store_decision("A.DE", "2026-01-15", DECISION_BUY)
+        p = write_portfolio(tmp_path, "A.DE,10,2026-01-15,100.0,2026-11-01,110.0,\n")
         cfg = port_config(p)
         assert len(realized.attribute_realized(log, cfg, as_of="2026-10-20")) == 0
         assert len(realized.attribute_realized(log, cfg, as_of="2026-11-01")) == 1
@@ -292,30 +292,30 @@ class TestAttribute:
 
     def test_benchmark_alpha(self, tmp_path, monkeypatch):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        # benchmark rises steadily across the holding window (Oct 9 -> Dec 1)
-        idx = pd.bdate_range("2026-10-05", "2026-12-05")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        # benchmark rises steadily across the holding window (Jan 15 -> Mar 1)
+        idx = pd.bdate_range("2026-01-05", "2026-03-05")
         bench = pd.Series([100.0 + 2 * i for i in range(len(idx))], index=idx)
         monkeypatch.setattr(settlement, "get_closes",
                             _get_closes_stub({"^GDAXI": bench}))
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n")
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n")
         cfg = port_config(p, benchmark="^GDAXI")
         out = realized.attribute_realized(log, cfg)
         # expected: realized return minus the benchmark's move over the window
-        w = bench[(bench.index >= "2026-10-09") & (bench.index <= "2026-12-01")]
-        ret = (950.0 - 983.30) / 983.30
+        w = bench[(bench.index >= "2026-01-15") & (bench.index <= "2026-03-01")]
+        ret = (90.0 - 100.00) / 100.00
         expected = ret - (float(w.iloc[-1]) - float(w.iloc[0])) / float(w.iloc[0])
         assert out[0]["alpha"] == pytest.approx(expected)
 
     def test_benchmark_fetch_failure_gives_none(self, tmp_path, monkeypatch):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
 
         def _boom(symbol, start_date, end_date):
             raise RuntimeError("offline")
 
         monkeypatch.setattr(settlement, "get_closes", _boom)
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n")
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n")
         out = realized.attribute_realized(log, port_config(p, benchmark="^GDAXI"))
         assert out[0]["alpha"] is None  # present but unknown, no crash
 
@@ -330,9 +330,9 @@ class TestRender:
         assert realized.render_realized_attribution([], "RHM.DE") == ""
 
     def test_same_and_cross(self):
-        a = {"ticker": "RHM.DE", "entry_date": "2026-10-09", "return": -0.034,
+        a = {"ticker": "RHM.DE", "entry_date": "2026-01-15", "return": -0.034,
              "pnl": -666.0, "currency": "EUR", "hit": True}
-        b = {"ticker": "A.DE", "entry_date": "2026-10-09", "return": 0.10,
+        b = {"ticker": "A.DE", "entry_date": "2026-01-15", "return": 0.10,
              "pnl": 100.0, "currency": "EUR", "hit": True}
         line = realized.render_realized_attribution([a, b], "RHM.DE")
         assert line.startswith("REALIZED P&L")
@@ -341,7 +341,7 @@ class TestRender:
         assert "-666.00 EUR" in line
 
     def test_only_the_analysed_ticker(self):
-        a = {"ticker": "RHM.DE", "entry_date": "2026-10-09", "return": -0.034,
+        a = {"ticker": "RHM.DE", "entry_date": "2026-01-15", "return": -0.034,
              "pnl": -666.0, "currency": "EUR", "hit": True}
         line = realized.render_realized_attribution([a], "RHM.DE")
         assert "RHM.DE: 1 trade(s)" in line
@@ -356,8 +356,8 @@ class TestRender:
 class TestCalibrationIntegration:
     def test_realized_bucket_counts(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n")
         realized.record_realized_trades(log, port_config(p))
         entries = log.load_entries()
         calib = calibration.build_calibration(entries, "RHM.DE", 5)
@@ -368,8 +368,8 @@ class TestCalibrationIntegration:
 
     def test_render_puts_realized_first(self, tmp_path):
         log = make_log(tmp_path)
-        log.store_decision("RHM.DE", "2026-10-09", DECISION_SELL)
-        p = write_portfolio(tmp_path, "RHM.DE,20,2026-10-09,983.30,2026-12-01,950.00,\n")
+        log.store_decision("RHM.DE", "2026-01-15", DECISION_SELL)
+        p = write_portfolio(tmp_path, "RHM.DE,20,2026-01-15,100.00,2026-03-01,90.00,\n")
         realized.record_realized_trades(log, port_config(p))
         line = calibration.render_calibration(
             calibration.build_calibration(log.load_entries(), "RHM.DE", 5), "RHM.DE")

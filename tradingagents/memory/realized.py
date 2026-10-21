@@ -10,8 +10,8 @@ yet) are left alone until their close is filled in.
 CSV format (header row required; ``#`` comments and blank lines ignored)::
 
     ticker,shares,entry_date,entry_price,close_date,close_price,note
-    RHM.DE,20,2026-10-09,983.30,,
-    RHM.DE,15,2026-10-09,983.30,2026-12-01,950.00,cut first tranche at stop
+    XYZ.DE,50,2026-01-15,100.00,,
+    XYZ.DE,25,2026-01-15,100.00,2026-03-01,90.00,cut first tranche at stop
 
 A row is *closed* when both ``close_date`` and ``close_price`` are present;
 otherwise it is an open position. Multiple closed rows on the same
