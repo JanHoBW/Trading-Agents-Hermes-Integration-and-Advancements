@@ -42,7 +42,7 @@ Use when the user asks what data inputs the workflow still lacks *in total* for 
    - *Structural gap*: no vendor implements the method for the universe. Fix: new vendor adapter or new data method (workflow-fixes.md, "Adding a data vendor"). US-only vendors (SEC EDGAR, Finnhub) never close a DE structural gap — they need a DE equivalent, not re-chaining.
 5. **Prioritize by effort/effect**: config entry > extending an existing vendor > new vendor for an existing method > new data method.
 
-**Current checkout state for the DE universe** (verify against the checkout before acting — this drifts as gaps get closed): `issuer_rss` is wired but the registry example's `news_feed_url` is `null` (first-party feed = configuration gap) — **and for Rheinmetall/RHM specifically no public first-party XML feed exists** (verified 2026-10-12: ~20 candidate feed paths on rheinmetall.com all return HTML/404 or redirect to the Nuxt SPA shell; the site's internal `/api/` Nuxt-Axios endpoint serves page-JSON only, no news-list endpoint; EQS exposes no public RSS for any issuer — confirmed against a reference ISIN; DGAP has none). Consequence: the `issuer_rss` vendor hard-parses RSS/Atom/RDF XML (`ET.fromstring`), so writing an HTML page URL into `news_feed_url` would break **every** RHM run with `VendorUnavailableError("official feed is invalid")` — worse than the current clean `not_configured` fall-through. The user (RHM analyzed frequently) chose to **leave `issuer_rss` unconfigured** and keep the working Marketaux+EQS chain; a genuine first-party RHM channel later needs a **new vendor** (CMS-API or HTML-list parser) wired into the `get_news` chain — not a registry URL. The DE insider/PDMR gap is now closed by a keyless `ureg_pdmr` vendor (see the Unternehmensregister route below) wired first in the insider chain, though no DE regulatory-filing source exists (sec_edgar = US EDGAR only); DE fundamentals have no second vendor (yfinance alone, so cross-vendor reconciliation does not apply); analyst consensus is single-source without per-rating dates; there is no full ETF-specific data path — TER/tracking-difference/AUM still have no vendor and ETFs ride the equity path with empty statements — though top-N holdings are now obtainable keyless via yfinance funds_data.top_holdings. Working and covered: prices/indicators with cross-vendor note, macro (official_europe ahead of FRED), prediction markets (keyless), news (marketaux + finnhub + news_supplement when injected).
+**Current checkout state for the DE universe** (verify against the checkout before acting — this drifts as gaps get closed): `issuer_rss` is wired but the registry example's `news_feed_url` is `null` (first-party feed = configuration gap) — **and for Rheinmetall/RHM specifically no public first-party XML feed exists** (verified 2026-10-12: ~20 candidate feed paths on rheinmetall.com all return HTML/404 or redirect to the Nuxt SPA shell; the site's internal `/api/` Nuxt-Axios endpoint serves page-JSON only, no news-list endpoint; EQS exposes no public RSS for any issuer — confirmed against a reference ISIN; DGAP has none). Consequence: the `issuer_rss` vendor hard-parses RSS/Atom/RDF XML (`ET.fromstring`), so writing an HTML page URL into `news_feed_url` would break **every** RHM run with `VendorUnavailableError("official feed is invalid")` — worse than the current clean `not_configured` fall-through. The user (RHM analyzed frequently) chose to **leave `issuer_rss` unconfigured** and keep the working Marketaux+EQS chain; a genuine first-party RHM channel later needs a **new vendor** (CMS-API or HTML-list parser) wired into the `get_news` chain — not a registry URL. The DE insider/PDMR gap is now closed by a keyless `ureg_pdmr` vendor (see the Unternehmensregister route below) wired first in the insider chain, though no DE regulatory-filing source exists (sec_edgar = US EDGAR only); DE fundamentals have no second vendor (yfinance alone, so cross-vendor reconciliation does not apply); analyst consensus is single-source without per-rating dates; ETF coverage improved but is not complete: the fund profile block (NAV/TER/YTD/AUM/inception) and the **top-10 holdings** now come keyless via yfinance (`funds_data.top_holdings`, integrated into the fundamentals report), while tracking-difference and full constituent weights still have no vendor and ETFs ride the equity path with empty statements. Working and covered: prices/indicators with cross-vendor note, macro (official_europe ahead of FRED), prediction markets (keyless), news (marketaux + finnhub + news_supplement when injected).
 
 ### Evaluating open-source projects as gap-fillers
 
@@ -311,6 +311,23 @@ pagination loop (zero-PDMR page + PDMR page 2, the Infineon shape; category excl
 exhaustion / duplicate-page stops; the `MAX_RECORDS` cap) to keep the category-mixing early-stop
 from regressing (regression-verified: a PDMR-only early-stop returns `[]` on that shape). All in
 `tests/test_ureg_pdmr.py`.
+
+**Second method on the same source (fork v1.0.6): `get_capital_market_disclosures`.**
+The same search page carries the rest of the issuer's capital-market record, so one vendor
+(`ureg_capital`, category `disclosure_data`, optional) serves it without a second scraper:
+category **79** Art. 17 MAR ad-hoc, **81** WpHG §40/41 voting rights, **83** capital-market
+information (buy-backs, AGM, capital measures), **89** §50 WpHG — ids observed live against
+Rheinmetall, Infineon and Deutsche Bank; **69** (bond admission notices) is excluded because it
+carries no issuer disclosure content, and **80** stays with the insider tool so nothing is
+reported twice. Same session, same per-emitter entity validation, same point-in-time filter on
+`sourceDate`; each entry gets a text excerpt from `/api/pub-html` (capped at 8 fetches, 700
+chars). The register files a DE and an EN twin per disclosure under the same
+(date, publicationType, issuer) key — those are merged to one entry (German kept) and the merge
+count is printed in the header. Because the category is optional and the vendor self-selects via
+the registry, a non-German ticker receives a scoped "no configured vendor covers this
+instrument" sentinel instead of a failed tool call. Offered to the News Analyst; tests in
+`tests/test_ureg_capital_markets.py` (filter, label map, merge, entity gate, point-in-time,
+empty-window wording, detail failure, router wiring).
 
 ## How to present recommendations
 

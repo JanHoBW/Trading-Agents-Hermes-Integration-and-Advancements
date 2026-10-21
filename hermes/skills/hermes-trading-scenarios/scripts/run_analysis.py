@@ -75,7 +75,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.2.0"
+WRAPPER_VERSION = "2.3.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -176,6 +176,37 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: f.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+def prompt_versions(root: Path) -> dict[str, str]:
+    """sha256 of every prompt-bearing module in the installed checkout.
+
+    The agents' prompts live in ``tradingagents/agents/``. Hashing those files at
+    run start turns "which prompts produced this report?" into a fact in
+    ``provenance.json`` instead of an assumption about the checkout state.
+    """
+    base = root / "tradingagents" / "agents"
+    if not base.is_dir():
+        return {}
+    return {str(f.relative_to(root)): sha256(f)
+            for f in sorted(base.rglob("*.py")) if "__pycache__" not in f.parts}
+
+
+def replay_id(a, profile: str, prompts: dict[str, str]) -> str:
+    """A short digest of everything that decides what this run should produce.
+
+    Inputs + rounds + backend/model + prompt hashes: two runs with the same id
+    made the same decisions from the same evidence, which is what makes a report
+    auditable and a re-run reproducible.
+    """
+    parts = {
+        "ticker": a.ticker, "date": a.date,
+        "analysts": a.analysts.split(",") if isinstance(a.analysts, str) else list(a.analysts),
+        "debate_rounds": a.debate_rounds, "risk_rounds": a.risk_rounds,
+        "llm_profile": profile, "prompts": prompts,
+    }
+    payload = json.dumps(parts, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
+
 
 def find_install_root() -> Path:
     configured = os.environ.get("TRADINGAGENTS_HOME", "").strip()
@@ -1151,6 +1182,7 @@ def execute_run(a: argparse.Namespace) -> None:
             os.environ["TRADINGAGENTS_REDDIT_OVERRIDES"] = str(sources_yaml)
 
     root = find_install_root()
+    prompts = prompt_versions(root)
     cmd = discover_command(root) + ["--ticker", a.ticker, "--date", a.date, "--analysts", a.analysts, "--save", "--no-show", "--html"]
     if a.portfolio:
         cmd += ["--portfolio", a.portfolio]
@@ -1253,6 +1285,8 @@ def execute_run(a: argparse.Namespace) -> None:
             "report_files": files,
             "data_coverage": matrix,
             "data_coverage_source": "report" if matrix else None,
+            "prompt_versions": prompts,
+            "replay_id": replay_id(a, prof, prompts),
             "copilot_enabled": _copilot_allowed(),
             "copilot_tos_note": COPILOT_TOS_NOTE if prof == "copilot" else None,
             "console_output": "tty (--ui); no tradingagents.log — see the saved report tree",
@@ -1323,7 +1357,8 @@ def execute_run(a: argparse.Namespace) -> None:
                         "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
                         "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                         "llm_chain":chain,"attempts":attempts,
-                        "command":cmd,"report_files":files,"data_coverage":data_coverage,
+                        "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions":prompts,
+                        "replay_id":replay_id(a,prof,prompts),
                         "copilot_enabled":_copilot_allowed(),
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
             prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")
@@ -1341,7 +1376,8 @@ def execute_run(a: argparse.Namespace) -> None:
                     "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
                     "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                     "llm_chain":chain,"attempts":attempts,
-                    "command":cmd,"report_files":files,"data_coverage":data_coverage,
+                    "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions":prompts,
+                        "replay_id":replay_id(a,prof,prompts),
                         "copilot_enabled":_copilot_allowed(),
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
         prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")

@@ -97,6 +97,71 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.7] — 2026-10-21
+
+The three follow-ups from the review: the log learns what the human actually did,
+settlement stops retrying what it can never score, and a run carries its prompts.
+
+### Added — execution tracking (`memory feedback --executed/--refused`)
+
+- An `EXECUTION:` JSON block per decision (`status`, `datum`, `grund`) records
+  whether the call was acted on, stored on the entry, preserved by every
+  settlement rewrite and surfaced in the Portfolio-Manager context — so "how
+  often did I follow the call?" is answerable from the log, not from memory.
+- `tradingagents memory feedback TICKER --executed|--refused [--reason=...]`,
+  combinable with `--note`; `memory show` prints the record. Pending entries that
+  carry an execution record now reach the PM context (they did so for feedback
+  before, not for execution).
+- `TradingMemoryLog.add_execution` / `_upsert_block`: idempotent (`same`), replacing
+  (`updated`), or `missing` — no silent no-ops.
+
+### Added — terminal settlement statuses
+
+- `settlement.UnscorableError` carries `delisted` (no price bars for the
+  instrument at all) or `benchmark_missing` (no benchmark series), raised only
+  once the window is more than `UNSCORABLE_AFTER_DAYS` (30) past — a fresh listing
+  or a vendor hiccup still keeps the entry pending.
+- `TradingMemoryLog.mark_unscorable` rewrites the entry tag to
+  `unscorable:<status>`, stores the reason in an `UNSCORABLE:` block, and
+  `get_entries_needing_settlement` skips such entries so they are never fetched
+  again. `Settlement.unscorable` reports them; the run's `memory_note` names them.
+- Every scored horizon now records `adjustment` (`PRICE_ADJUSTMENT = "adjusted"`,
+  yfinance's auto_adjust default) so an outcome states its price basis; legacy
+  horizons parse as `None`.
+
+### Added — prompt versions and a replay id (wrapper 2.3.0)
+
+- `provenance.json` gains `prompt_versions` (sha256 of every module under
+  `tradingagents/agents/`) and `replay_id` (16-hex digest over
+  ticker+date+analysts+rounds+backend+prompt hashes) in both the headless and the
+  `--ui` path.
+
+### Changed — quantified risk debate
+
+- `RISK_QUANTIFICATION` (shared prompt block, `agents/context.py`) is appended to
+  all three risk debators and the Portfolio Manager: stop distance in % (ATR-based
+  where available), implied position size at a stated risk budget, and four fixed
+  scenario definitions (index -10 %, rates +100 bp, oil +20 %, EUR/USD +5 %) with
+  the impact on the position. Missing inputs must be written as "not available";
+  inventing a beta or sensitivity is forbidden.
+
+### Cleaned
+
+- Removed the dead `_extract_pdmr_rows` helper (test-only since the category
+  refactor); its fixture test now filters `_extract_publication_rows` directly.
+- Docs corrected: the ETF block no longer "lacks holdings", the coverage reference
+  documents the second UReg method.
+- Workspace debris removed: 12 empty run directories from negative-path dry runs
+  and an abandoned 7.4 MB checkpoint DB (`RHM.DE.db`, 51 stale checkpoints across
+  two dead threads).
+
+### Testing
+
+- `tests/test_memory_execution.py` (8), `tests/test_settlement_unscorable.py` (7),
+  `tests/test_risk_quantification.py` (5), skill
+  `test_run_analysis_prompt_versions.py` (6). Full repo suite: 1615 passed,
+  1 skipped. Skill suite: 37 passed.
+
 ## [Fork v1.0.6] — 2026-10-21
 
 Four gaps from the improvement review: official German disclosures, ETF
