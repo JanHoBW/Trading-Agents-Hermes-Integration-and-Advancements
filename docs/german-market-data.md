@@ -64,7 +64,7 @@ The existing Yahoo adapter supplies OHLCV history, profile fundamentals, annual/
 
 A live RHM.DE probe showed the latest daily history bar can have OHLC/volume but a missing Close. We compared it to Yahoo's raw chart response: its daily timestamp represents the exchange-local session date, but the raw response itself had `close: null` and `adjclose: null` for that bar. Therefore the observed missing close is not caused by converting the timestamp to UTC. Indicator/history loading still excludes an unsettled bar; the routed stock-price fetch now rejects a missing requested final Close and tries Alpha Vantage, if configured. Do not replace a missing close with the current quote. yfinance's optional `repair=True` path was not verified in the project environment because its `scikit-learn` dependency is absent.
 
-Yahoo news did not return articles tagged `RHM.DE` in the tested window. That is a Yahoo coverage gap, not evidence that Rheinmetall issued no news; the official issuer feed remains unconfigured.
+**Corrected 2026-10-21 — this was a query artefact, not a coverage gap.** A Yahoo search with the *symbol* (`Search("RHM.DE")`) returns no articles, while a search with the *company name* returns ten, nine of them tagged `RHM.DE` (Simply Wall St, WSJ, Investing.com, Berenberg downgrade). `yf.Ticker(...).get_news()` returns nothing even for NVDA, so the quote-feed path is dead for everyone and the search path is the only live one. The vendor now falls back to the quote's own company name and keeps the strict symbol-tag filter; a 7-day RHM.DE window returns four dated articles. The official issuer feed is still unconfigured.
 
 ## dpa and comdirect news
 

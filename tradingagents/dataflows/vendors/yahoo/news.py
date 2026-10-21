@@ -54,22 +54,58 @@ def _extract_article_data(article: dict) -> dict:
     }
 
 
+def _tagged_articles(news: list | None, canonical: str) -> list:
+    """Articles Yahoo tags with ``canonical`` (the symbol, not just the name)."""
+    return [
+        a for a in (news or [])
+        if canonical in (t.upper() for t in a.get("relatedTickers") or [])
+    ]
+
+
+def _quote_name(quotes: list | None) -> str | None:
+    """The quote's own company name, from the symbol search's first match.
+
+    Yahoo's German/European quotes carry it (``longname``/``shortname``), so the
+    name fallback needs no registry or per-ticker configuration.
+    """
+    for q in quotes or []:
+        for key in ("longname", "shortname"):
+            value = (q or {}).get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def _search_news(canonical: str, limit: int) -> tuple[list, bool]:
     """Yahoo search's articles tagged with ``canonical``, and whether it knows the symbol.
 
     Search answers when the quote feed is empty, but its articles are a
     relevance-picked sample, and some are tagged loosely; only those tagged with
     the symbol are about it.
+
+    Yahoo tags most non-US listings' articles with the symbol in
+    ``relatedTickers`` but returns **none of them** for a query with the symbol
+    itself (verified 2026-10-21: ``Search("RHM.DE")`` → 0 news, while
+    ``Search("Rheinmetall")`` → 10 articles, 9 of them tagged ``RHM.DE``). A
+    symbol-only query therefore reported a data gap that did not exist. The
+    second attempt uses the quote's own company name and keeps the same symbol
+    filter, so recall improves without loosening relevance.
     """
     search = yf_retry(lambda: yf.Search(canonical, news_count=limit))
     if search is None:  # Yahoo answered "not found": its search is down
         return [], False
-    tagged = [
-        a for a in (search.news or [])
-        if canonical in (t.upper() for t in a.get("relatedTickers") or [])
-    ]
-    knows = any((q.get("symbol") or "").upper() == canonical for q in search.quotes or [])
-    return tagged, knows or bool(search.news)
+    tagged = _tagged_articles(getattr(search, "news", None), canonical)
+    knows = any((q.get("symbol") or "").upper() == canonical
+                for q in getattr(search, "quotes", None) or [])
+    if tagged:
+        return tagged, True
+
+    name = _quote_name(getattr(search, "quotes", None))
+    if name:
+        by_name = yf_retry(lambda: yf.Search(name, news_count=limit))
+        if by_name is not None:
+            tagged = _tagged_articles(getattr(by_name, "news", None), canonical)
+    return tagged, knows or bool(getattr(search, "news", None)) or bool(name)
 
 
 def _format_articles(articles: list[dict]) -> str:

@@ -97,6 +97,23 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.9] — 2026-10-21
+
+### Fixed — Yahoo news searched by symbol only
+
+- `get_news` reported "Yahoo Finance has no news articles tagged RHM.DE" for every
+  German listing. Verified live: `Search("RHM.DE")` returns 0 articles, but
+  `Search("Rheinmetall")` returns 10 — **nine of them tagged `RHM.DE`** — and
+  `Ticker(...).get_news()` returns nothing even for NVDA, so the quote-feed path is
+  dead for every ticker and the symbol search was the only live path. The vendor
+  now retries with the quote's own `longname`/`shortname` (no registry needed) and
+  keeps the strict `relatedTickers` filter, so recall improves without loosening
+  relevance. A 7-day RHM.DE window now returns four dated articles (Simply Wall
+  St, WSJ, Investing.com ×2) and `get_news` degrades to `degraded` instead of
+  `unavailable`.
+- Tests: `tests/test_yahoo_news_name_fallback.py` (6); existing look-ahead tests
+  unchanged (47 passed in the two files).
+
 ## [Fork v1.0.8] — 2026-10-21
 
 ### Fixed — reasoning effort is part of the run record
