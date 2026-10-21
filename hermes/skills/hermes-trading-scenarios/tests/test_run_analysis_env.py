@@ -105,7 +105,10 @@ class LLMProfileTests(unittest.TestCase):
 
     def test_auto_prefers_copilot_when_token_present(self):
         home = self._home_with("COPILOT_GITHUB_TOKEN=test-copilot\n")
-        with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=True), \
+        # Copilot is gated behind an explicit consent flag; the chain preference
+        # itself is what this test asserts.
+        env = {"HERMES_HOME": str(home), run_analysis.ALLOW_COPILOT_ENV: "1"}
+        with patch.dict(os.environ, env, clear=True), \
                 patch.object(run_analysis, "_endpoint_reachable", return_value=True):
             name, defaults = run_analysis.resolve_llm_profile("auto")
         self.assertEqual(name, "copilot")

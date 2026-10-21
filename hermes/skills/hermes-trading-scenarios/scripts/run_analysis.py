@@ -18,6 +18,8 @@ Flags for run (all optional; equals form --flag=value, space form is a hard erro
   --ui                   Run in the full framework TUI in its own gnome-terminal window
                          (not combinable with --bg)
   --llm NAME             Force backend: auto|copilot|lmstudio|webercloud
+  --allow-copilot        Enable the fork-only Copilot endpoint for this run
+                         (ToS gray zone; also TRADINGAGENTS_ALLOW_COPILOT=1)
   --api-url URL          Generic OpenAI-compatible backend (implies the custom profile);
                          must be combined with --model
   --model M              Model name for --api-url (e.g. unsloth/qwen3.8-27b)
@@ -73,7 +75,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.1.0"
+WRAPPER_VERSION = "2.2.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -288,6 +290,22 @@ def _check_weber_reachable(url: str) -> None:
 # mirror. Each is tried in turn when the previous one fails on an LLM-backend
 # error (quota / host down / timeout-with-no-report).
 LLM_CHAIN = ["copilot", "lmstudio", "webercloud"]
+# Copilot is a fork-only, ToS-gray endpoint (VSCode client headers) — never a
+# silent default: it must be enabled explicitly, per run (--allow-copilot) or
+# per environment (TRADINGAGENTS_ALLOW_COPILOT=1).
+ALLOW_COPILOT_ENV = "TRADINGAGENTS_ALLOW_COPILOT"
+COPILOT_TOS_NOTE = (
+    "fork-only endpoint: the Copilot backend uses VSCode client headers against "
+    "api.githubcopilot.com (ToS gray zone) — enabled explicitly for this run"
+)
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _copilot_allowed() -> bool:
+    return _truthy(os.environ.get(ALLOW_COPILOT_ENV))
 
 
 def _to_text(x) -> str:
@@ -312,6 +330,9 @@ def _copilot_token() -> str:
 def _profile_precheck(name: str) -> tuple[bool, str]:
     """Non-failing availability check for one profile (used by the auto chain)."""
     if name == "copilot":
+        if not _copilot_allowed():
+            return False, (f"disabled by feature flag — set {ALLOW_COPILOT_ENV}=1 "
+                           f"or pass --allow-copilot (fork-only endpoint, ToS gray zone)")
         ok = bool(_copilot_token())
         return ok, "copilot token present" if ok else "no COPILOT_GITHUB_TOKEN"
     if name == "lmstudio":
@@ -809,6 +830,8 @@ def _writable_dir(path: Path) -> tuple[bool, str]:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     """`doctor [TICKER]`: pre-flight for unattended runs. Exit 0/3/4."""
+    if getattr(args, "allow_copilot", False):
+        os.environ[ALLOW_COPILOT_ENV] = "1"
     checks: list[dict] = []
 
     def check(name: str, status: str, detail: str) -> None:
@@ -955,6 +978,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     """`run TICKER [DATE]`: validate, build the news supplement, launch the run."""
     if args.bg and args.ui:
         fail("--ui und --bg schließen sich aus (Fenster braucht eine offene Interaktion)")
+    # The flag is the per-run consent for a fork-only, ToS-gray endpoint; it is
+    # turned into the env var the profile prechecks read, and forwarded to a
+    # --bg child (which otherwise loses it).
+    if getattr(args, "allow_copilot", False):
+        os.environ[ALLOW_COPILOT_ENV] = "1"
 
     ticker = args.ticker  # uppercased + validated by type=ticker
     date = args.date or dt.date.today().isoformat()
@@ -1037,6 +1065,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         child = [sys.executable, str(Path(__file__).resolve()), "run", ticker, date]
         if args.quick:
             child.append("--quick")
+        if getattr(args, "allow_copilot", False):
+            child.append("--allow-copilot")
         for flag, val in (("--llm", args.llm), ("--api-url", args.api_url), ("--model", args.model),
                           ("--reasoning-effort", args.reasoning_effort),
                           ("--lmstudio-model", args.lmstudio_model), ("--weber-model", args.weber_model),
@@ -1105,6 +1135,11 @@ def execute_run(a: argparse.Namespace) -> None:
         if not ok:
             fail(f"LLM profile '{a.llm}' is not available: {reason}.")
         chain = [a.llm]
+
+    if "copilot" in chain:
+        # Never silent: the ToS note goes to the human on stderr and into
+        # provenance; stdout stays a clean JSON contract.
+        print(f"WARNUNG: {COPILOT_TOS_NOTE}", file=sys.stderr)
 
     # Hand-curated sources (German portal feeds, forum threads, Reddit search
     # terms) live in references/hardcoded_sources.yaml next to this script. The
@@ -1218,6 +1253,8 @@ def execute_run(a: argparse.Namespace) -> None:
             "report_files": files,
             "data_coverage": matrix,
             "data_coverage_source": "report" if matrix else None,
+            "copilot_enabled": _copilot_allowed(),
+            "copilot_tos_note": COPILOT_TOS_NOTE if prof == "copilot" else None,
             "console_output": "tty (--ui); no tradingagents.log — see the saved report tree",
         }
         prov = write_provenance(out, provenance)
@@ -1286,7 +1323,9 @@ def execute_run(a: argparse.Namespace) -> None:
                         "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
                         "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                         "llm_chain":chain,"attempts":attempts,
-                        "command":cmd,"report_files":files,"data_coverage":data_coverage}
+                        "command":cmd,"report_files":files,"data_coverage":data_coverage,
+                        "copilot_enabled":_copilot_allowed(),
+                        "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
             prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")
             result.update({"llm": prof, "elapsed_seconds": elapsed, "log": str(log), "provenance": str(prov),
                            "attempts": attempts, "report_files": files, "data_coverage": data_coverage})
@@ -1302,7 +1341,9 @@ def execute_run(a: argparse.Namespace) -> None:
                     "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
                     "llm_backend_url":llm_defaults.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                     "llm_chain":chain,"attempts":attempts,
-                    "command":cmd,"report_files":files,"data_coverage":data_coverage}
+                    "command":cmd,"report_files":files,"data_coverage":data_coverage,
+                        "copilot_enabled":_copilot_allowed(),
+                        "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
         prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")
         if timed_out:
             fail(f"TradingAgents timed out after {a.timeout}s (profile {prof}); "
@@ -1327,13 +1368,8 @@ examples:
 """
 
 
-def main() -> None:
-    ensure_venv_python()
-
-    for tok in sys.argv[1:]:
-        if tok in VALUE_FLAGS:
-            fail(f"Flag {tok} braucht die Equals-Form ({tok}=wert) — Space-Form ist ein Hard Error")
-
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI surface (separate from main() so tests can parse arguments)."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, epilog=_EPILOG)
     sub = ap.add_subparsers(dest="cmd")
@@ -1351,6 +1387,8 @@ def main() -> None:
     pr.add_argument("--dry-run", action="store_true", help="nur das Child-Command anzeigen (kein News-Build, kein LLM-Call)")
     pr.add_argument("--llm", choices=["auto", "copilot", "lmstudio", "webercloud"], default=None,
                     help="Backend erzwingen; Default: lmstudio (--quick: swift low)")
+    pr.add_argument("--allow-copilot", action="store_true",
+                    help="Copilot-Backend für diesen Lauf freischalten (Fork-only, ToS-Grauzone; Default: aus)")
     pr.add_argument("--api-url", default=None,
                     help="generisches OpenAI-kompatibles Backend (impliziert custom); muss mit --model kombiniert werden")
     pr.add_argument("--model", default=None, help="Modell-Name für --api-url (z. B. unsloth/qwen3.8-27b)")
@@ -1385,10 +1423,23 @@ def main() -> None:
     pdoc.add_argument("date", nargs="?", type=iso_date, default=None, help="optional: Analyse-Datum YYYY-MM-DD")
     pdoc.add_argument("--llm", choices=["auto", "copilot", "lmstudio", "webercloud"], default=None,
                       help="nur dieses Backend prüfen (Default: auto = alle in der Kette)")
+    pdoc.add_argument("--allow-copilot", action="store_true",
+                      help="Copilot als verfügbar prüfen (sonst meldet der Check 'disabled by feature flag')")
     pdoc.add_argument("--portfolio", default=None, help="Portfolio-JSON mitprüfen")
     pdoc.add_argument("--supplement", default=None, help="News-Supplement mitprüfen")
     pdoc.set_defaults(func=cmd_doctor)
 
+    return ap
+
+
+def main() -> None:
+    ensure_venv_python()
+
+    for tok in sys.argv[1:]:
+        if tok in VALUE_FLAGS:
+            fail(f"Flag {tok} braucht die Equals-Form ({tok}=wert) — Space-Form ist ein Hard Error")
+
+    ap = build_parser()
     args = ap.parse_args()
     if not getattr(args, "func", None):
         ap.print_help()

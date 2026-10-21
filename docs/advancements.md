@@ -97,6 +97,72 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.6] — 2026-10-21
+
+Four gaps from the improvement review: official German disclosures, ETF
+holdings, a consent gate for the Copilot endpoint, and a calibration record that
+says how much it can carry.
+
+### Added — UReg capital-market disclosures (`disclosure_data`)
+
+- **`get_capital_market_disclosures`** (vendor `ureg_capital`) reuses the
+  `ureg_pdmr` search session and entity validation, and serves the categories the
+  register files next to PDMR: **79** Art. 17 MAR ad-hoc, **81** WpHG §40/41
+  voting rights, **83** capital-market information (buy-backs, AGM, capital
+  measures), **89** §50 WpHG. Category ids were observed live against Rheinmetall,
+  Infineon and Deutsche Bank; 69 (bond admission notices) is excluded because it
+  carries no issuer disclosure content.
+- New **optional** category `disclosure_data` (`DEFAULT_CONFIG["data_vendors"]`),
+  so a non-German ticker gets a scoped "no configured vendor covers this
+  instrument" sentinel instead of a failed tool call — the router's optional-path
+  message now distinguishes "not configured" (coverage limit) from "could not be
+  retrieved".
+- Each entry: publication date, category label, title, language, and a text
+  excerpt from `/api/pub-html`. The register files a DE and an EN twin per
+  disclosure; they are merged to one entry (German wins) on
+  (date, publicationType, issuer) and the merge count is printed in the header.
+- Offered to the **News Analyst**, whose prompt now says to use it for German
+  listings instead of inferring corporate events from articles, and never to
+  read an absent disclosure as an absent event.
+
+### Added — ETF top holdings
+
+- The ETF profile block lists the top 10 holdings with weights, ranked,
+  token-free from `yf.Ticker(...).funds_data.top_holdings`. No as-of date is
+  claimed because Yahoo supplies none; a failed or empty lookup returns no block
+  and never costs the rest of the fundamentals.
+
+### Changed — Copilot is gated behind explicit consent (wrapper 2.2.0)
+
+- `--allow-copilot` (per run) or `TRADINGAGENTS_ALLOW_COPILOT=1` is required for
+  the fork-only Copilot endpoint; otherwise it drops out of the `auto` chain and
+  an explicit `--llm=copilot` fails with a message naming the flag. Flag is
+  forwarded to `--bg` children and honoured by `doctor`.
+- Every Copilot use prints a warning on stderr (stdout stays a JSON contract)
+  and records `copilot_tos_note` / `copilot_enabled` in `provenance.json`.
+- `build_parser()` split out of `main()` so the CLI surface is testable.
+
+### Changed — calibration carries a confidence label
+
+- `build_calibration` returns `confidence` per record (level, reason, n): **low**
+  below 8 pooled settled outcomes, **medium** below 20 or inside a 35–65 % chance
+  band, **high** otherwise. Per-instrument rates can only lower the level — a
+  ticker whose own rate disagrees with the pooled one by more than 25 points is
+  flagged unstable.
+- No Brier score: the rating scale is ordinal, so there is no probability to
+  score. The rendered line states the level and, at `low`, explicitly calls the
+  record an anecdote the Portfolio Manager must not treat as a track record.
+
+### Testing
+
+- `tests/test_ureg_capital_markets.py` (15): category filter/label map, DE-EN
+  merge, entity validation, point-in-time, empty-window wording, detail failure,
+  router wiring and the optional sentinel.
+- `tests/test_etf_holdings.py` (6) and `tests/test_calibration_confidence.py` (7).
+- `hermes/skills/.../tests/test_run_analysis_copilot_flag.py` (9): gate, env
+  consent, parser flags, bg forwarding.
+- Full repo suite: 1595 passed, 1 skipped.
+
 ## [Fork v1.0.5] — 2026-10-21
 
 Closing the two audit holes that mattered most: a run's data gaps now reach the
