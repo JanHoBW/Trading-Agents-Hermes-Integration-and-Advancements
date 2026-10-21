@@ -218,6 +218,12 @@ def build_default_config() -> dict:
             "news_data": "ureg_pdmr,issuer_rss,marketaux,finnhub,yfinance,alpha_vantage",  # Options: ureg_pdmr, issuer_rss, marketaux, finnhub, yfinance, alpha_vantage
             "macro_data": "official_europe,fred",  # ECB/Eurostat official series; FRED fallback
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+            # Official issuer disclosures from the German register (ad-hoc
+            # Art. 17 MAR, voting rights WpHG §40/41, capital-market
+            # information, §50 WpHG). Self-selects via the issuer registry;
+            # the category is optional, so a non-German ticker degrades to a
+            # scoped "not covered" note instead of failing a tool call.
+            "disclosure_data": "ureg_capital",  # Options: ureg_capital
         },
         # Cross-vendor OHLCV reconciliation: when the primary price data came
         # from a less-trusted source (Alpha Vantage — detected by its header),

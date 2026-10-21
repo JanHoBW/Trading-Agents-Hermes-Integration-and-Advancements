@@ -29,6 +29,7 @@ from tradingagents.dataflows.vendors.finnhub import (
 from tradingagents.dataflows.vendors.fred import get_macro_data as get_fred_macro_data
 from tradingagents.dataflows.vendors.issuer_rss import get_news_issuer_rss
 from tradingagents.dataflows.vendors.ureg_pdmr import (
+    get_ureg_capital_market_disclosures,
     get_ureg_pdmr_insider_transactions,
 )
 from tradingagents.dataflows.vendors.marketaux import get_news_marketaux
@@ -98,6 +99,12 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_prediction_markets",
         ]
+    },
+    "disclosure_data": {
+        "description": "Official issuer disclosures (ad-hoc, voting rights, capital measures)",
+        "tools": [
+            "get_capital_market_disclosures",
+        ]
     }
 }
 
@@ -106,7 +113,9 @@ TOOLS_CATEGORIES = {
 # sentinel instead of aborting the run (a bad LLM-supplied indicator, a missing
 # key, or a network blip should not crash an analysis over flavour data). Core
 # categories (prices, fundamentals, news) still raise so a broken primary is loud.
-OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
+# disclosure_data is optional because its only vendor covers German issuers: a
+# US ticker must get a scoped "not covered" note, never a failed tool call.
+OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets", "disclosure_data"}
 
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
@@ -163,6 +172,14 @@ VENDOR_METHODS = {
         "finnhub": get_finnhub_insider_transactions,
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+    },
+    # disclosure_data
+    "get_capital_market_disclosures": {
+        # Official issuer disclosures (ad-hoc, voting rights, capital measures)
+        # from the German register. Self-selects via the issuer registry, so a
+        # non-German ticker raises VendorNotConfiguredError and the optional
+        # category degrades instead of failing the run.
+        "ureg_capital": get_ureg_capital_market_disclosures,
     },
     # macro_data
     "get_macro_indicators": {
@@ -321,6 +338,16 @@ def route_to_vendor(method: str, *args, **kwargs):
     if first_error is not None:
         if category in OPTIONAL_CATEGORIES:
             logger.warning("Optional %s unavailable for %s: %s", category, method, first_error)
+            # "not configured" means no vendor covers this instrument — a scope
+            # statement, not a retrieval failure. Saying so keeps the agent from
+            # describing a German-only source's absence as a market event.
+            if isinstance(first_error, VendorNotConfiguredError):
+                return (
+                    f"DATA_UNAVAILABLE: no configured vendor covers {method} for this "
+                    f"instrument ({first_error}). This is a coverage limit of the "
+                    f"configured sources, not evidence about the instrument; do not "
+                    f"fabricate values."
+                )
             return (
                 f"DATA_UNAVAILABLE: optional {category} could not be retrieved "
                 f"({first_error}). Proceed without it; do not fabricate values."

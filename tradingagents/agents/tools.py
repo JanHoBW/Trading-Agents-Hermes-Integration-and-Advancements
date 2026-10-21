@@ -306,6 +306,26 @@ def get_insider_transactions(
 
 
 @tool
+def get_capital_market_disclosures(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve OFFICIAL German issuer disclosures for a company: ad-hoc
+    disclosures (Art. 17 MAR), voting-rights notifications (WpHG §40/41),
+    capital-market information (buy-backs, AGM, capital measures) and §50 WpHG
+    publications, from the Unternehmensregister.
+
+    Coverage is German issuers only (self-selecting via the issuer registry);
+    for other listings the tool reports that no configured source covers the
+    instrument. Insider/PDMR transactions are a separate tool.
+    Returns:
+        str: A report of capital-market disclosures with publication dates
+    """
+    return route_to_vendor("get_capital_market_disclosures", ticker, trade_date or None)
+
+
+@tool
 def get_macro_indicators(
     indicator: Annotated[
         str,

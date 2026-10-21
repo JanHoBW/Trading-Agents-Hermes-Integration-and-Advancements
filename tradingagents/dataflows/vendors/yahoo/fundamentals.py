@@ -20,6 +20,50 @@ from tradingagents.dataflows.vendors.yahoo.common import (
 # Quote currencies Yahoo gives in a minor unit, and the main unit of each.
 _MAIN_UNIT = {"GBp": "GBP", "GBX": "GBP", "ZAc": "ZAR", "ILA": "ILS"}
 
+_ETF_HOLDINGS_SHOWN = 10
+
+
+def _etf_top_holdings(canonical: str) -> list[str]:
+    """Top holdings of an ETF, as report lines; empty when Yahoo has none.
+
+    ``funds_data.top_holdings`` is a separate token-free request and returns a
+    DataFrame indexed by holding symbol with a weight column. Yahoo supplies no
+    as-of date for it, so the lines say that instead of implying freshness.
+    Never raises: a fund without holdings data (or a non-fund) simply gets no
+    block, and a failed lookup must not cost the rest of the fundamentals.
+    """
+    try:
+        holdings = yf_retry(lambda: yf.Ticker(canonical).funds_data.top_holdings)
+    except Exception:  # noqa: BLE001 — enrichment only, never fatal
+        return []
+    if holdings is None or getattr(holdings, "empty", True):
+        return []
+    weight_col = next(
+        (c for c in holdings.columns if "percent" in str(c).lower() or "weight" in str(c).lower()),
+        None,
+    )
+    if weight_col is None:
+        return []
+    rows = []
+    for symbol, row in holdings.iterrows():
+        try:
+            weight = float(row[weight_col]) * 100  # Yahoo gives a fraction
+        except (TypeError, ValueError):
+            continue
+        name = str(row.get("Holding Name") or "").strip()
+        label = f"{name} ({symbol})" if name and name != str(symbol) else str(symbol)
+        rows.append((weight, f"{label}: {weight:.2f}%"))
+    if not rows:
+        return []
+    rows.sort(key=lambda r: r[0], reverse=True)
+    lines = [f"ETF top holdings ({len(rows)} shown, weights in % of fund; "
+             "Yahoo supplies no as-of date for this snapshot):"]
+    lines += [f"- {text}" for _w, text in rows[:_ETF_HOLDINGS_SHOWN]]
+    if len(rows) > _ETF_HOLDINGS_SHOWN:
+        lines.append(f"- … {len(rows) - _ETF_HOLDINGS_SHOWN} further holding(s) not shown")
+    return lines
+
+
 
 def get_fundamentals(
     ticker: Annotated[str, "ticker symbol of the company"],
@@ -147,6 +191,7 @@ def get_fundamentals(
         for label, key in (("Legal type", "legalType"), ("Category", "category")):
             if info.get(key):
                 etf_lines.append(f"{label}: {info[key]}")
+        etf_lines.extend(_etf_top_holdings(canonical))
 
     # yfinance returns a stub dict (e.g. {"trailingPegRatio": None}) for
     # unknown symbols, so `info` is truthy but every field is empty. Treat

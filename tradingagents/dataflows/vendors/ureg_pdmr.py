@@ -58,6 +58,28 @@ MAX_DETAIL_FETCHES = 25   # cap on /api/pub-html fetches per call
 # Mercedes-Benz's PDMR rows appear past page 2).
 MAX_PAGES = 6
 
+# Capital-market disclosure categories, observed live on 2026-10-21 in the same
+# section (drilldownFilter=21) for Rheinmetall, Infineon and Deutsche Bank:
+#   79  Ad-hoc-Meldung gemäß Art. 17 MAR
+#   81  WpHG §40/41 (voting-rights notification, total voting rights)
+#   83  "Veröffentlichung einer Kapitalmarktinformation" (Zulassungsfolge-
+#       pflichtmitteilung: buy-backs, AGM, capital measures)
+#   89  Veröffentlichung gemäß §50 WpHG
+# Category 80 (PDMR) is served by get_ureg_pdmr_insider_transactions — one
+# source, two methods, no duplicated output. Category 69 (bond listing /
+# admission notices, seen for Deutsche Bank) carries no issuer disclosure
+# content and is deliberately excluded.
+CAPITAL_MARKET_CATEGORIES: dict[int, tuple[str, str]] = {
+    79: ("ad_hoc", "ad-hoc disclosure (Art. 17 MAR)"),
+    81: ("voting_rights", "voting-rights notification (WpHG §40/41)"),
+    83: ("capital_market_info",
+         "capital-market information (buy-back, AGM, capital measure)"),
+    89: ("wphg_50", "publication under WpHG §50"),
+}
+CAPITAL_MARKET_MAX_RECORDS = 12   # newest N disclosures per call
+CAPITAL_MARKET_DETAILS = 8        # /api/pub-html fetches per call
+CAPITAL_MARKET_TEXT_CHARS = 700   # excerpt length per disclosure
+
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/155.0.0.0 Safari/537.36"
@@ -230,6 +252,9 @@ def _extract_publication_rows(html: str) -> list[dict]:
                 "language": pub.get("language"),
                 "payload": payload,
                 "category": (pub.get("publicationCategory") or {}).get("id"),
+                # publicationType distinguishes e.g. §40 from §41 within the
+                # same voting-rights category; used to merge DE/EN twins.
+                "type": (pub.get("publicationType") or {}).get("id"),
                 "title": (pub.get("title") or "")[:120],
             })
     return rows
@@ -405,9 +430,14 @@ def _fetch_page(s: requests.Session, query_name: str, page: int) -> list[dict]:
     return _extract_publication_rows(body)
 
 
-def _search(query_name: str) -> list[dict]:
+def _search(query_name: str, wanted: set[int] | None = None) -> list[dict]:
+    """Walk the issuer's publication list and keep the wanted categories.
+
+    ``wanted`` defaults to PDMR only, which is the insider method's behaviour.
+    """
+    wanted = wanted if wanted is not None else {PDMR_CATEGORY_ID}
     s = _open_search(query_name)
-    pdmr: list[dict] = []
+    kept: list[dict] = []
     seen: set[str] = set()
     for page in range(1, MAX_PAGES + 1):
         page_rows = _fetch_page(s, query_name, page)
@@ -419,11 +449,11 @@ def _search(query_name: str) -> list[dict]:
             break
         for r in fresh:
             seen.add(r["payload"])
-            if r["category"] == PDMR_CATEGORY_ID:
-                pdmr.append(r)
-        if len(pdmr) >= MAX_RECORDS:
+            if r["category"] in wanted:
+                kept.append(r)
+        if len(kept) >= MAX_RECORDS:
             break
-    return pdmr[:MAX_RECORDS]
+    return kept[:MAX_RECORDS]
 
 
 # ---------------------------------------------------------------------------
@@ -533,3 +563,160 @@ def get_ureg_pdmr_insider_transactions(ticker: str, as_of_date: str | None = Non
     if len(window) > MAX_DETAIL_FETCHES:
         lines.append(f"\n_(showing {MAX_DETAIL_FETCHES} of {len(window)} disclosures)_")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Capital-market disclosures (ad-hoc, voting rights, capital measures)
+#
+# Same source and session as the insider method, different categories. The
+# register files each disclosure in German and English; both rows carry the same
+# (sourceDate, publicationType, issuer), so the pair is merged to one entry —
+# the German filing wins — and the merge is reported rather than hidden.
+# ---------------------------------------------------------------------------
+
+def fetch_detail_text(payload: str) -> str:
+    """The disclosure's plain text from /api/pub-html, trimmed to an excerpt.
+
+    Non-PDMR categories have no field table (``parse_pub_html`` returns nothing
+    useful for them), so the value here is the cleaned running text.
+    """
+    try:
+        resp = requests.get(
+            f"{UReg_BASE}/api/pub-html",
+            params={"payload": payload},
+            headers={"User-Agent": _USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise VendorUnavailableError(f"UReg detail fetch failed: {exc}") from None
+    text = _clean(resp.text)
+    if len(text) <= CAPITAL_MARKET_TEXT_CHARS:
+        return text
+    cut = text[:CAPITAL_MARKET_TEXT_CHARS]
+    # trim at a word boundary so the excerpt never ends mid-word
+    return cut[: cut.rfind(" ")] + " …" if " " in cut else cut + " …"
+
+
+def _merge_translations(rows: list[dict]) -> tuple[list[dict], int]:
+    """Collapse DE/EN twins of the same filing; return (rows, merged_count).
+
+    Key is (disclosure date, publication type, issuer) — the register reuses it
+    for the language pair. The German row is kept when present. A genuine second
+    filing of the same type on the same day would be merged too; the count is
+    reported so the reader sees that happened rather than it happening silently.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for row in rows:
+        key = (row.get("disclosure_date"), row.get("type"), row.get("company"))
+        groups.setdefault(key, []).append(row)
+    kept: list[dict] = []
+    merged = 0
+    for group in groups.values():
+        group.sort(key=lambda r: 0 if (r.get("language") or "").startswith("de") else 1)
+        kept.append(group[0])
+        merged += len(group) - 1
+    kept.sort(key=lambda r: (r.get("disclosure_date") or ""), reverse=True)
+    return kept, merged
+
+
+def get_ureg_capital_market_disclosures(
+    ticker: str,
+    as_of_date: str | None = None,
+    categories: list[str] | None = None,
+) -> str:
+    """German capital-market disclosures (ad-hoc, voting rights, capital
+    measures) for a registry-listed issuer, point-in-time on the disclosure date.
+
+    ``categories`` filters by the short names in ``CAPITAL_MARKET_CATEGORIES``
+    (``ad_hoc``, ``voting_rights``, ``capital_market_info``, ``wphg_50``);
+    unknown names are reported, never silently ignored.
+    """
+    instrument = _load_instrument(ticker)
+    query_name: str = instrument["ureg_query_name"]
+    entity_name: str = instrument["ureg_entity_name"]
+    entity_key = _norm_name(entity_name)
+
+    wanted_ids = set(CAPITAL_MARKET_CATEGORIES)
+    unknown: list[str] = []
+    if categories:
+        by_name = {name: cid for cid, (name, _label) in CAPITAL_MARKET_CATEGORIES.items()}
+        selected = set()
+        for name in categories:
+            cid = by_name.get(str(name).strip().lower())
+            if cid is None:
+                unknown.append(str(name))
+            else:
+                selected.add(cid)
+        if selected:
+            wanted_ids = selected
+
+    rows = _search(query_name, wanted=wanted_ids)
+    mine = [r for r in rows if _norm_name(r["company"]) == entity_key]
+    dropped = len(rows) - len(mine)
+
+    as_of = None
+    if as_of_date:
+        try:
+            from datetime import date
+            as_of = date.fromisoformat(as_of_date)
+        except ValueError:
+            as_of = None
+    window = [r for r in mine
+              if r["disclosure_date"] and (as_of is None or r["disclosure_date"] <= as_of.isoformat())]
+    window, merged = _merge_translations(window)
+    window = window[:CAPITAL_MARKET_MAX_RECORDS]
+
+    header = [
+        f"# Capital-market disclosures for {instrument['ticker']} ({entity_name})",
+        "# Source: Unternehmensregister (unternehmensregister.de) — official German "
+        "register, keyless public search; entity-validated (fuzzy name matches of "
+        "other companies excluded).",
+        "# Categories: " + ", ".join(f"{name} = {label}"
+                                     for name, label in CAPITAL_MARKET_CATEGORIES.values())
+        + ". PDMR/insider transactions are a separate dataset.",
+        "# disclosure_date is the publication date; filtered point-in-time when an "
+        "as-of date is given. Text excerpts are the register's own wording.",
+    ]
+    if unknown:
+        header.append(f"# ignored unknown category name(s): {', '.join(unknown)}")
+    if dropped:
+        header.append(f"# {dropped} row(s) of other matched companies excluded by entity validation.")
+    if merged:
+        header.append(f"# {merged} German/English twin row(s) merged (German filing kept).")
+    if as_of:
+        header.append(f"# filtered to disclosures on or before {as_of.isoformat()} (point-in-time)")
+
+    if not window:
+        if mine:
+            newest = max((r["disclosure_date"] or "") for r in mine)
+            note = f"latest disclosure of these categories in source: {newest}"
+        else:
+            note = f"no disclosures of these categories for {entity_name!r} in the register's result set"
+        return "\n".join(header) + (
+            f"\n# Result: none on record. {note}. This is an absence in this source "
+            f"only — it does not prove no disclosure was published elsewhere. Do not "
+            f"infer a neutral event picture from it."
+        )
+
+    lines = header + [""]
+    for row in window[:CAPITAL_MARKET_DETAILS]:
+        short, label = CAPITAL_MARKET_CATEGORIES.get(row["category"], ("other", "other category"))
+        lines.append(f"## {row['disclosure_date']} — {short} — {label}")
+        if row.get("title"):
+            lines.append(f"- title: {row['title']}")
+        lines.append(f"- language: {row.get('language') or 'unknown'}")
+        try:
+            excerpt = fetch_detail_text(row["payload"])
+        except VendorUnavailableError as exc:
+            lines.append(f"- text: (detail fetch failed: {exc})")
+            continue
+        if excerpt:
+            lines.append(f"- text: {excerpt}")
+    if len(window) > CAPITAL_MARKET_DETAILS:
+        lines.append(
+            f"\n_(showing {CAPITAL_MARKET_DETAILS} of {len(window)} disclosures; "
+            f"newest first)_"
+        )
+    return "\n".join(lines)
+
