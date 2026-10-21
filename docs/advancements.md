@@ -24,7 +24,7 @@ log format, CLI subcommand).
 ```
  ┌──────────────────────────────────────────────────────────────────────────┐
  │  Human / Hermes agent (profile)                                          │
- │  ta.sh wrapper (single call point: run | news)                           │
+ │  run_analysis.py (single call point: run | news)                         │
  │  tradingagents CLI: run · backtest · memory feedback|show · login|logout │
  └──────────────────────────────────┬───────────────────────────────────────┘
                                     │
@@ -44,7 +44,7 @@ log format, CLI subcommand).
  │  official_eu ECB/Eurostat macro  │  │                REFLECTION_JSON ←───┐│
  │  yfinance + alpha_vantage OHLCV  │  │                HORIZONS {5,21,63,  │
  │  cross-vendor OHLCV reconciliation│  │                                   │
- │  news_supplement (ta.sh feeds)   │  │                126: outcomes}      │
+ │  news_supplement (skill feeds)   │  │                126: outcomes}      │
  └──────────────────────────────────┘  │                HUMAN_FEEDBACK ─────┘│
                                        │  settlement.py window scoring from │
                                        │  the first close after the         │
@@ -93,9 +93,49 @@ log format, CLI subcommand).
 | Human feedback | `HUMAN_FEEDBACK` block + `cli memory` subcommand | none |
 | Realized P&L | `portfolio` config + `memory/realized.py` CSV reader | none (`path=None` = paper mode) |
 | News supplement | `news_supplement` vendor + `TRADINGAGENTS_NEWS_SUPPLEMENT` | none (opt-in) |
-| One-call wrapper | `ta.sh` in the Hermes profile (not in this repo) | none (process level) |
+| One-call wrapper | `run_analysis.py` in `hermes/skills/hermes-trading-scenarios` | none (process level) |
 
 ---
+
+## [Fork v1.0.4] — 2026-10-21
+
+One wrapper instead of two — and the skill that drives it is versioned in this repo.
+
+### Changed — the wrapper is one Python entry point (skill)
+
+- **`ta.sh` deleted.** The 252-line bash layer duplicated `run_analysis.py`'s
+  validation and defaults, and the two had already drifted:
+  `--custom-api-key-env=` was documented but implemented only in Python, and round
+  limits were checked in one place and enforced in another. All orchestration —
+  news pipeline (one call into `news_collect.py`), ticker metadata from
+  `references/hardcoded_sources.yaml`, `--bg`, `--quick`, output layout, LLM
+  profile defaults — now lives in `run_analysis.py` v2.0.0 with two subcommands,
+  `run TICKER [DATE]` and `news TICKER [DATE]`.
+- **Self re-exec.** The script re-executes itself under the fork venv's Python when
+  started with another interpreter, so `python3 …/run_analysis.py run RHM.DE` works
+  from any shell — the guarantee the bash layer used to provide.
+- **`--quick` redefined** (user decision): local `swift-1.5-qwen3.8-27b`,
+  `reasoning-effort=low`, 1/1 rounds; it used to mean the webercloud profile. An
+  explicit `--reasoning-effort` / `--lmstudio-model` / rounds flag still beats it.
+- **Checkpointing on by default** for unattended runs
+  (`TRADINGAGENTS_CHECKPOINT_ENABLED=true`, overridable from the environment).
+- **Skill source moved into this repo** under `hermes/skills/hermes-trading-scenarios/`
+  (SKILL.md, references, scripts, tests). Hermes loads the skill from the profile
+  path; this directory is the versioned copy — change both in the same step.
+
+### Testing
+
+- `pytest tests/ -q` → 15 passed. The suite had been 7/8 red: it still called the
+  three-argument `build_child_env`, the old `qwen/qwen3.8-27b` model id and a
+  reachability gate that no longer exists.
+- Dry runs: default, `--quick`, and a pinned model+effort → `ok: true` with the
+  expected model, rounds and output directory. Nine negative cases (unknown flag,
+  bad ticker/date/suffix, space-form flag, `--api-url` without `--model`,
+  `--ui --bg`, rounds=7, unknown ticker) → exit 2 with one clear message.
+- End to end: RHM.DE 2026-10-21, `openai/gpt-6-luna` at `xhigh` through the
+  `custom` profile (OpenRouter), debate 1 / risk 2 → rc=0 in 610 s, 26 report
+  files, `provenance.json` and the data-coverage block written. LM Studio on
+  pc-finn was offline, which is what the custom profile is for.
 
 ## [Fork v1.0.3] — 2026-10-20
 
@@ -112,7 +152,7 @@ required editing `run_analysis.py`. Now:
   Optional `--custom-api-key-env <NAME>` reads the key from a profile `.env`
   variable (a remote host without one gets a warning, not a failure). The
   preflight reachability check covers the custom endpoint like the other profiles.
-- **`ta.sh` shortcuts**: `--api-url=<url> --model=<id>` implies `--llm custom`;
+- **`run_analysis.py` shortcuts**: `--api-url=<url> --model=<id>` implies `--llm custom`;
   both flags are validated (http(s) URL, model charset, set-together rule) and
   stay mutually exclusive with an explicit `--llm`.
 
@@ -159,7 +199,7 @@ This fork adds an opt-in layout that unifies them:
   `default_report_path()` and the state-log path
   (`tradingagents/graph/trading_graph.py`). Ticker validation still runs even
   when nothing is appended.
-- **Wrapper switch** (fork-only, Hermes profile): `ta.sh`/`run_analysis.py`
+- **Wrapper switch** (fork-only, `hermes/skills/hermes-trading-scenarios`): `run_analysis.py`
   now set `TRADINGAGENTS_RESULTS_DIR=~/.tradingagents/reports/trading-scenarios/<TICKER>/<DATE>[-<SUFFIX>]`
   plus `TRADINGAGENTS_RESULTS_LAYOUT=run_dir`. All app data (memory, portfolio,
   registry, cache **and** reports) now lives under one root, `~/.tradingagents/`;

@@ -1,0 +1,79 @@
+# ============================================================================
+# Hand-curated (hardcoded) sources for the TradingAgents news pipeline.
+# ----------------------------------------------------------------------------
+# MENSCHENLESBAR & EDITIERBAR — einfach Einträge ergänzen, kein Code nötig.
+# Diese Datei wächst über die Zeit; neue Ticker/Foren/Feeds hier anlegen.
+#
+# Gelesen von:
+#   * scripts/news_sources/de_feeds.py (via news_collect.py) -> feeds + forums (deutsche Portale)
+#   * scripts/run_analysis.py -> ticker-Metadaten (names, isin, sector; load_ticker_meta)
+#   * tradingagents/dataflows/vendors/reddit.py
+#       -> reddit-Overrides, via Env TRADINGAGENTS_REDDIT_OVERRIDES
+#          (wird von run_analysis.py automatisch gesetzt)
+#
+# Feed-Status geprüft am 2026-10-16 von diesem Host:
+#   tagesschau, finanzmarktwelt, n-tv ................ OK
+#   hartpunkt.de (Drohnen-/Rüstungs-Nachrichten) .... OK (Wartungs-Feed, RSS 2.0)
+#   esut.de (ESUT-Magazin, Mittler Report Verlag) .... OK (RSS 2.0, 6 Items)
+#   finanzen.net ................................ Akamai blockt Datacenter-IPs (403) -> disabled
+#   boerse.de / wallstreet-online .............. kein nutzbares öffentliches RSS von hier -> disabled
+# ============================================================================
+version: 1
+
+sectors:
+  defense:
+    # Sektor-Kontext: News zu diesen Begriffen werden zusätzlich gesammelt
+    # (max. --sector-max Items pro Run, als [Sektor] markiert).
+    keywords:
+      - Rheinmetall
+      - Hensoldt
+      - Airbus
+      - OHB
+      - "Krauss-Maffei"
+      - KMW
+      - Diehl
+      - Renk
+      - Aris
+      - Eurodrone
+      - ESUT                  # ESUT-Magazin (esut.de) — Rüstungstechnik
+      - Hartpunkt             # hartpunkt.de — Rüstungs-/Drohnen-Nachrichten
+
+tickers:
+  RHM.DE:
+    names: [Rheinmetall]          # Suchbegriffe für Feed-Filter + Reddit
+    isin: DE0007030009            # verifiziert: DPA-Feed-Tag (WKN 703000)
+    sector: defense               # optionaler Sektor-Kontext (siehe sectors)
+    forums:                       # hand-curated Forum-Threads (HTML-Parsing)
+      - label: "BörsenNEWS Rheinmetall – Aktionäre und Investoren"
+        url: "https://www.boersennews.de/community/diskussion/rheinmetall-aktionaere-und-investoren/92438/?r=410#userComments"
+    reddit:                       # Overrides für den Reddit-Vendor
+      queries: [Rheinmetall]      # zusätzliche Suchbegriffe neben dem Ticker
+      subreddits:                 # geprüft 2026-10-19 (Reddit-Site-Suche, letzte Woche):
+        - wallstreetbetsGER       #   ~20 RHM-Posts/Woche (DE-Mirror von WSB)
+        - RHM_Rheinmetall         #   dediziertes Sub inkl. Weekly-RHM-Thread
+                                  # Default-US-Subs (wallstreetbets/stocks/investing): 0 RHM-Hits
+
+feeds:                            # RSS/Atom-Feeds; enabled=false zum Deaktivieren
+  # --- Rüstungsspezialisierte Quellen (Sektor-Defense, RHM-relevant) ---
+  - id: hartpunkt                   # Drohnen-/Rüstungs-Nachrichten (geprüft 2026-10-16)
+    url: "https://www.hartpunkt.de/feed/"
+    enabled: true
+  - id: esut                        # ESUT-Magazin, Mittler Report Verlag (geprüft 2026-10-16)
+    url: "https://esut.de/feed/"
+    enabled: true
+  # --- Breite Wirtschaftspresse ---
+  - id: tagesschau_wirtschaft
+    url: "https://www.tagesschau.de/wirtschaft/index~rss2.xml"
+    enabled: true
+  - id: finanzmarktwelt
+    url: "https://finanzmarktwelt.de/feed/"
+    enabled: true
+  - id: ntv_schlagzeilen           # Top-News inkl. Wirtschaft; Sektionsfeeds tot (10/2026)
+    url: "https://www.n-tv.de/rss"
+    enabled: true
+  - id: finanzen_net               # Akamai 403 von Datacenter-IPs (geprüft 2026-10-16)
+    url: "https://www.finanzen.net/nachrichten/rss.xml"
+    enabled: false
+  - id: boerse_de                  # kein nutzbares öffentliches RSS von hier (geprüft 2026-10-16)
+    url: "https://www.boerse.de/rss/news.xml"
+    enabled: false
