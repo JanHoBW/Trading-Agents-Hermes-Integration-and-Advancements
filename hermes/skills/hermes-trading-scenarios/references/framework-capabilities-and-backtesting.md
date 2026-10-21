@@ -11,7 +11,7 @@ Answer from code + the run's artifacts, never from memory. Audit BOTH directions
 
 Pitfall: the fork delta alone only shows fork additions; base capabilities live at origin/main and a delta-only audit reports them as "nonexistent" (the upstream backtest CLI was exactly that case — missed until the base tree was listed). Verify a candidate feature with its real `--help`/signature before quoting it as available.
 
-1. **Enumerate the tool surface** from `tradingagents/dataflows/router.py` (`TOOLS_CATEGORIES`: core_stock_apis, technical_indicators, fundamental_data, news_data, macro_data, prediction_markets) plus the sentiment analyst's direct vendor calls (reddit, stocktwits — not router-routed) and the fork vendors (european_official, sec_edgar, ureg_pdmr, issuer_rss, marketaux, finnhub, fred, polymarket, news_supplement).
+1. **Enumerate the tool surface** from `tradingagents/dataflows/router.py` (`TOOLS_CATEGORIES`: core_stock_apis, technical_indicators, fundamental_data, news_data, macro_data, prediction_markets) plus the sentiment analyst's direct vendor calls (reddit, stocktwits — not router-routed) and the fork vendors (european_official, sec_edgar, ureg_pdmr, issuer_rss, issuer_ir, marketaux, finnhub, fred, polymarket, news_supplement).
 2. **Distinguish three states per method** — conflating them produces false "unused" claims:
    - *configured*: key present — read provenance `data_coverage.flags` (`fred_api_key_missing`, `marketaux_token_missing`, `finnhub_token_missing`).
    - *attempted*: appears in provenance `data_coverage.methods` with a status (the router logged the call).

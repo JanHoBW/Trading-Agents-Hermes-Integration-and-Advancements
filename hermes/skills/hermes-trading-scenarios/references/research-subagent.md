@@ -49,11 +49,15 @@ context:
     ]
   }
 - Constraints: file ≤ 100 KB; published_at within [start_date, as_of]
-  (the run window); https URLs only. The news analyst picks its own
-  retrieval window (roughly "past 1 week" relative to the run date) and the
-  vendor filters snapshot items by `start <= published_at <= end` — items
-  older than ~7 days may never reach the debate, so prefer published_at
-  within the last 7 days of as_of.
+  (the run window); https URLs only. Supplementary news is bound to the
+  **headline window** (`news_lookback_days`, default 7 days; the analyst calls
+  `get_news` with exactly those dates) and the vendor filters snapshot items by
+  `start <= published_at <= end` — so an article older than the headline window
+  never reaches the debate through this route. Corporate events from that longer
+  past do reach it through the **event-context block** (first-party sources,
+  `event_context_lookback_days`, default 180 days), which is injected into the
+  news prompt independently of the snapshot. Prefer published_at within the
+  headline window of as_of, and let the event block carry older corporate facts.
 - Report back: the file path, the sha256, and a 3-line summary of what the
   snapshot will add to the debate (what changed vs the last report).
 ```

@@ -663,7 +663,7 @@ Kept out of upstream by design (see "Fork-only" below).
 
 - Default `core_stock_apis` chain: `yfinance` → `yfinance,alpha_vantage`
   (Alpha Vantage fallback for series Yahoo lacks).
-- Default `news_data` chain: `ureg_pdmr,issuer_rss,marketaux,finnhub,yfinance,alpha_vantage`.
+- Default `news_data` chain: `ureg_pdmr,issuer_rss,marketaux,finnhub,yfinance,alpha_vantage`. (Historical — the chain has since grown a first-party head and a PDMR slot: `issuer_ir,ureg_pdmr,issuer_rss,…`, see v1.0.10 and v1.0.11.)
 - Default `macro_data` chain: `official_europe,fred`.
 - New config keys: `issuer_registry_path` (env `TRADINGAGENTS_ISSUER_REGISTRY`,
   default `~/.tradingagents/german_equities.json`), `news_supplement_path`

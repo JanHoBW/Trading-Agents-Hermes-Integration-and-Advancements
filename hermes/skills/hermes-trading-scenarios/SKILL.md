@@ -285,7 +285,7 @@ For an A/B **backend/model** comparison of the same ticker (e.g. local 9B via LM
 
 ## Commands
 
-**Einziges öffentliches Entry-Point — `run_analysis.py` (alle Läufe) — `$SKILL/scripts/run_analysis.py` (v2.3.1, seit 2026-10-21; `doctor`, Copilot-Gate, Prompt-Versionen + Effort; ta.sh gelöscht):**
+**Einziges öffentliches Entry-Point — `run_analysis.py` (alle Läufe) — `$SKILL/scripts/run_analysis.py` (v2.4.0, seit 2026-10-21; `doctor`, Copilot-Gate, Prompt-Versionen + Effort, zwei Analysefenster; ta.sh gelöscht):**
 
 ```bash
 scripts/run_analysis.py run RHM.DE              # Standard-Run (lokal, lmstudio xhigh, 3/2 Runden)
