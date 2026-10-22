@@ -9,7 +9,13 @@ Output is a schema-v1 snapshot compatible with gnews_snapshot.py merge:
 
     de_news.py fetch --ticker RHM.DE --date 2026-10-16 --out de_snap.json
     gnews_snapshot.py merge --ticker RHM.DE --date 2026-10-16 \
-        --in dpa_snap.json gnews_snap.json de_snap.json --max 15 --out news_supplement_rhm_2026-10-16.json
+        --in dpa_snap.json gnews_snap.json de_snap.json --max 30 --out news_supplement_rhm_2026-10-16.json
+
+Slot order (matters, see cmd_fetch): ticker name matches -> `all_items: true`
+specialty feeds ([Fachquelle], hartpunkt/esut) -> broad sector context
+([Sektor]) -> curated forum posts (capped by --forum-max, filled last).
+Previously forums were inserted before sector context and ate every free
+slot, which silently pushed the defence-specialised reporting out of the run.
 
 No API keys. Degrades gracefully: a dead feed is reported in the summary,
 never fatal.
@@ -94,17 +100,42 @@ def _text(el) -> str:
     return " ".join((el.text or "").split()) if el is not None else ""
 
 
+def _kw_hit(text: str, kw: str) -> bool:
+    """Prefix-bounded keyword match (German-friendly).
+
+    Plain substring matching produced false positives: `Rüstung` hit inside
+    `Ausrüstung`, so a Globus/Russland story landed as defence context. A
+    leading word boundary fixes that while still matching compounds and
+    inflections (`Drohne` -> `Drohnen`, `Rüstung` -> `Rüstungsindustrie`).
+    Short keywords (<5 chars, e.g. KMW/Renk/OHB) match whole words only.
+    """
+    kw = kw.lower().strip()
+    if not kw or kw not in text:
+        return False
+    start = rf"(?<![a-zäöüß0-9]){re.escape(kw)}"
+    if len(kw) < 5:
+        start += r"(?![a-zäöüß0-9])"
+    return re.search(start, text) is not None
+
+
 def fetch_feed(feed_id: str, url: str, names: list[str], sector_kw: list[str],
-               start: dt.date, as_of: dt.date) -> tuple[list[dict], list[dict]]:
-    """Return (name_matches, sector_context_items)."""
+               start: dt.date, as_of: dt.date,
+               all_items: bool = False) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return (name_matches, sector_context_items, specialty_items).
+
+    `all_items: true` in the YAML marks a specialty source (hartpunkt, esut):
+    its items pass without a name/sector match and are tagged `[Fachquelle]`,
+    so defence-relevant capability news that never names a listed company
+    (Fregatten, Drohnenabwehr, Weltraum, Beschaffung) still reaches the run.
+    """
     data = _http_get(url)
     if not data:
-        return [], []
+        return [], [], []
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
         print(f"  ! {feed_id}: XML parse error: {exc}", file=sys.stderr)
-        return [], []
+        return [], [], []
 
     entries: list[tuple[str, str, str]] = []  # (title, link, date_raw+desc)
     if root.tag == "rss":
@@ -123,7 +154,7 @@ def fetch_feed(feed_id: str, url: str, names: list[str], sector_kw: list[str],
             date_raw = _text(entry.find("a:published", ns)) or _text(entry.find("a:updated", ns))
             entries.append((title, link, f"{date_raw}\t{desc}"))
 
-    name_hits, sector_hits = [], []
+    name_hits, sector_hits, all_hits = [], [], []
     for title, link, blob in entries:
         if not (link.startswith("http") and title):
             continue
@@ -134,13 +165,16 @@ def fetch_feed(feed_id: str, url: str, names: list[str], sector_kw: list[str],
             continue
         item_base = {"source": feed_id, "url": link.strip(),
                      "published_at": pub.isoformat()}
-        if any(n.lower() in text for n in names):
+        if any(_kw_hit(text, n) for n in names):
             name_hits.append({**item_base, "title": title.strip(),
                               "excerpt": desc[:400]})
-        elif sector_kw and any(k.lower() in text for k in sector_kw):
+        elif all_items:
+            all_hits.append({**{**item_base, "source": f"{feed_id} [Fachquelle]"},
+                             "title": title.strip(), "excerpt": desc[:400]})
+        elif sector_kw and any(_kw_hit(text, k) for k in sector_kw):
             sector_hits.append({**{**item_base, "source": f"{feed_id} [Sektor]"},
                                 "title": title.strip(), "excerpt": desc[:400]})
-    return name_hits, sector_hits
+    return name_hits, sector_hits, all_hits
 
 
 # ---------------------------------------------------------------- forums ---
@@ -250,35 +284,56 @@ def cmd_fetch(args) -> None:
     summary = {"ticker": args.ticker, "as_of": as_of.isoformat(),
                "feeds": {}, "forums": {}}
     sector_pool: list[dict] = []
+    fach_pool: list[dict] = []
 
     for feed in src.get("feeds", []):
         if not feed.get("enabled"):
             continue
-        hits, sector_hits = fetch_feed(feed["id"], feed["url"], names,
-                                       sector_kw, start, as_of)
+        hits, sector_hits, all_hits = fetch_feed(feed["id"], feed["url"], names,
+                                                sector_kw, start, as_of,
+                                                all_items=bool(feed.get("all_items")))
         summary["feeds"][feed["id"]] = {"name_matches": len(hits),
-                                        "sector_context": len(sector_hits)}
+                                        "sector_context": len(sector_hits),
+                                        "specialty": len(all_hits)}
         sector_pool.extend(sector_hits)
+        fach_pool.extend(all_hits)
+        hits.sort(key=lambda x: x["published_at"], reverse=True)
         for it in hits:
             if it["url"] not in seen_urls:
                 seen_urls.add(it["url"])
                 items.append({**it, "retrieved_at": retrieved})
 
-    for forum in spec.get("forums", []):
-        posts = fetch_forum(forum.get("label", "forum"), forum["url"], start, as_of)
-        summary["forums"][forum.get("label", "?")] = len(posts)
-        for it in posts:
-            if it["url"] not in seen_urls:
-                seen_urls.add(it["url"])
-                items.append({**it, "retrieved_at": retrieved})
+    # Slot order matters: ticker name matches (all feeds) -> specialty sources
+    # ([Fachquelle], e.g. hartpunkt/esut) -> broad sector context -> forums last,
+    # so chatter can no longer crowd out the defence-specialised reporting.
+    fach_pool.sort(key=lambda x: x["published_at"], reverse=True)
+    sector_pool.sort(key=lambda x: x["published_at"], reverse=True)
 
-    # Sector context fills remaining slots after name matches.
-    room = max(0, args.max - len(items))
-    for it in sector_pool[:room]:
-        if it["url"] not in seen_urls:
+    def _fill(pool: list[dict], budget: int) -> int:
+        added = 0
+        for it in pool:
+            if added >= budget or len(items) >= args.max:
+                break
+            if it["url"] in seen_urls:
+                continue
             seen_urls.add(it["url"])
             items.append({**it, "retrieved_at": retrieved})
+            added += 1
+        return added
 
+    summary["specialty_added"] = _fill(fach_pool, args.fach_max)
+    summary["sector_added"] = _fill(sector_pool, args.sector_max)
+
+    forum_budget = max(0, min(args.forum_max, args.max - len(items)))
+    forum_added = 0
+    for forum in spec.get("forums", []):
+        if forum_added >= forum_budget:
+            break
+        posts = fetch_forum(forum.get("label", "forum"), forum["url"], start, as_of)
+        summary["forums"][forum.get("label", "?")] = len(posts)
+        posts.sort(key=lambda x: x["published_at"], reverse=True)
+        forum_added += _fill(posts, forum_budget - forum_added)
+    summary["forum_added"] = forum_added
     snapshot = {"schema_version": 1, "ticker": args.ticker, "as_of": as_of.isoformat(),
                 "source": "de_news", "items": items[:args.max]}
     out = json.dumps(snapshot, ensure_ascii=False, indent=2)
@@ -299,9 +354,15 @@ def main(argv=None) -> None:
     pf.add_argument("--ticker", required=True, help="key under 'tickers:' in the sources file")
     pf.add_argument("--date", required=True, help="as_of, YYYY-MM-DD")
     pf.add_argument("--window-days", type=int, default=7)
-    pf.add_argument("--max", type=int, default=10)
-    pf.add_argument("--sector-max", type=int, default=3,
-                    help="(informational; sector items fill free slots up to --max)")
+    pf.add_argument("--max", type=int, default=30,
+                    help="max items in the snapshot (framework/vendor cap is 30)")
+    pf.add_argument("--sector-max", type=int, default=5,
+                    help="max broad sector-context items (outlet feeds, [Sektor] tag)")
+    pf.add_argument("--fach-max", type=int, default=10,
+                    help="max items from all_items feeds (hartpunkt/esut, [Fachquelle] tag)")
+    pf.add_argument("--forum-max", type=int, default=3,
+                    help="max forum posts; forums are filled last, after name, "
+                         "specialty and sector items")
     pf.add_argument("--out")
     pf.set_defaults(func=cmd_fetch)
     args = ap.parse_args(argv)

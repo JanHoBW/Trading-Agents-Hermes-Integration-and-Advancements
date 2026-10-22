@@ -63,6 +63,9 @@ from urllib.parse import urlparse
 import ipaddress
 from dotenv import dotenv_values
 
+NEWS_SUPPLEMENT_MAX_ITEMS = 30    # bounded evidence snapshot, matches the news_supplement vendor
+NEWS_SUPPLEMENT_MAX_BYTES = 100_000
+
 TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,19}$", re.ASCII)
 ALLOWED_ANALYSTS = {"market", "news", "fundamentals", "social"}
 REPORT_SUFFIXES = {".md", ".html", ".json", ".txt"}
@@ -124,7 +127,7 @@ def supplement(value: str) -> str:
     path = Path(value).expanduser().resolve()
     if not path.is_file():
         raise argparse.ArgumentTypeError(f"news supplement file not found: {value}")
-    if path.stat().st_size > 100_000:
+    if path.stat().st_size > NEWS_SUPPLEMENT_MAX_BYTES:
         raise argparse.ArgumentTypeError("news supplement must be at most 100 KB")
     return str(path)
 
@@ -157,8 +160,9 @@ def validate_supplement(path: str, ticker: str, as_of: str) -> None:
     if data.get("as_of") != as_of:
         raise ValueError(f"as_of must equal the run date {as_of}, got {data.get('as_of')!r}")
     items = data.get("items")
-    if not isinstance(items, list) or len(items) > 10:
-        raise ValueError("items must be a list of at most 10 entries")
+    if not isinstance(items, list) or len(items) > NEWS_SUPPLEMENT_MAX_ITEMS:
+        raise ValueError(
+            f"items must be a list of at most {NEWS_SUPPLEMENT_MAX_ITEMS} entries")
     for i, item in enumerate(items):
         if not str(item.get("url", "")).startswith("https://"):
             raise ValueError(f"items[{i}].url must be a public https URL")

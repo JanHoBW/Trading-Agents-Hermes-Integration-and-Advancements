@@ -29,7 +29,7 @@ Response cache (request-load reduction):
 
 Usage:
   gnews_snapshot.py fetch --ticker IFX.DE --names "Infineon" --date 2026-10-14
-                        [--lang auto|de|en] [--window-days 7] [--max 10]
+                        [--lang auto|de|en] [--window-days 7] [--max 30]
                         [--with-market] [--market-query "..."] [--cache-ttl 1800]
                         [--out snap.json]
   gnews_snapshot.py refine --ticker NVDA.XNAS --date 2026-10-14 --q "NVDA"
@@ -58,6 +58,14 @@ ENDPOINT = "https://gnews.io/api/v4/search"
 PACING_S = 6.0          # min gap between API requests (burst protection)
 REQUEST_TIMEOUT = 25
 MAX_EXCERPT = 6000
+MAX_ITEMS = 30          # snapshot item cap, kept in sync with the news_supplement vendor
+SNAPSHOT_BYTES = 100 * 1024  # schema byte limit enforced by the vendor
+FACH_TAG = "[Fachquelle]"    # de_feeds: all_items feed (hartpunkt/esut)
+SEKTOR_TAG = "[Sektor]"      # de_feeds: broad sector context
+# Reserved slots per tag when merging: without them the plain newest-first sort
+# lets high-frequency press/aggregator items push the specialised reporting out
+# of the supplement (observed 2026-10-21: 0 of 10 items from hartpunkt).
+MERGE_RESERVE = {FACH_TAG: 10, SEKTOR_TAG: 5}
 EN_SUFFIXES = (".XNAS", ".XNYS", ".XNGS", ".XBOU")
 DE_SUFFIXES = (".DE", ".XETRA")
 
@@ -198,7 +206,7 @@ def validate_item(it):
 
 def write_snapshot(snap, out):
     data = json.dumps(snap, ensure_ascii=False, indent=2)
-    if len(data.encode()) > 100 * 1024:
+    if len(data.encode()) > SNAPSHOT_BYTES:
         sys.exit("snapshot exceeds 100 KB schema limit")
     with open(out, "w", encoding="utf-8") as f:
         f.write(data)
@@ -300,7 +308,12 @@ def cmd_refine(args):
 
 
 def cmd_merge(args):
-    """Merge multiple schema-v1 snapshots (same ticker/as_of) into one ≤10-item file."""
+    """Merge multiple schema-v1 snapshots (same ticker/as_of) into one ≤30-item file.
+
+    Items are deduped (URL + title key, newest wins) and then trimmed until the
+    serialized snapshot fits the 100 KB schema limit — excerpts can be long, so
+    the byte budget, not just the item count, is authoritative.
+    """
     pools = []
     for path in args.inputs:
         with open(path, encoding="utf-8") as f:
@@ -319,7 +332,28 @@ def cmd_merge(args):
         seen_urls.add(it["url"])
         seen_titles.add(tk)
         kept.append(it)
-    items = kept[: args.max]
+
+    # Tagged buckets first (reserved slots), then newest-first fill up to --max.
+    # Reserved items are kept even if older than incoming press noise.
+    tagged: dict[str, list[dict]] = {tag: [] for tag in MERGE_RESERVE}
+    rest: list[dict] = []
+    for it in kept:
+        tag = next((t for t in MERGE_RESERVE if t in it.get("source", "")), None)
+        (tagged[tag] if tag else rest).append(it)
+    reserved: list[dict] = []
+    for tag, budget in MERGE_RESERVE.items():
+        reserved.extend(tagged[tag][:budget])
+    room = max(0, args.max - len(reserved))
+    items = reserved + rest[:room]
+    items.sort(key=lambda x: x["published_at"], reverse=True)
+    # Byte budget wins over item count: drop oldest items until it fits.
+    while items:
+        snap = {"schema_version": 1, "ticker": args.ticker, "as_of": args.date,
+                "items": items}
+        size = len(json.dumps(snap, ensure_ascii=False, indent=2).encode())
+        if size <= SNAPSHOT_BYTES:
+            break
+        items = items[:-1]
     write_snapshot(
         {"schema_version": 1, "ticker": args.ticker, "as_of": args.date, "items": items},
         args.out,
@@ -337,7 +371,7 @@ def main(argv=None):
                     help="search language: auto = ticker suffix (.XNAS/.XNYS/.XNGS/.XBOU -> en, "
                          ".DE/.XETRA -> de, else de + hint)")
     pf.add_argument("--window-days", type=int, default=7)
-    pf.add_argument("--max", type=int, default=10)
+    pf.add_argument("--max", type=int, default=MAX_ITEMS)
     pf.add_argument("--with-market", action="store_true")
     pf.add_argument("--market-query", default=None,
                     help="second query when --with-market (default: Dax / S&P 500 by lang)")
@@ -350,14 +384,14 @@ def main(argv=None):
     pr.add_argument("--date", required=True, help="as_of, YYYY-MM-DD")
     pr.add_argument("--q", required=True, help="query term that was fetched earlier")
     pr.add_argument("--keywords", required=True, help="comma list; substring match on title+excerpt")
-    pr.add_argument("--max", type=int, default=10)
+    pr.add_argument("--max", type=int, default=MAX_ITEMS)
     pr.add_argument("--out")
     pr.set_defaults(fn=cmd_refine)
     pm = sub.add_parser("merge", help="merge snapshot files (dedupe by URL, newest wins)")
     pm.add_argument("--ticker", required=True)
     pm.add_argument("--date", required=True)
     pm.add_argument("--in", dest="inputs", nargs="+", required=True)
-    pm.add_argument("--max", type=int, default=10)
+    pm.add_argument("--max", type=int, default=MAX_ITEMS)
     pm.add_argument("--out", required=True)
     pm.set_defaults(fn=cmd_merge)
     a = p.parse_args(argv)

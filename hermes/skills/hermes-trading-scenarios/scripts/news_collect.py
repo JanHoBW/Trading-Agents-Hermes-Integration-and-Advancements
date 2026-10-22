@@ -13,7 +13,7 @@ Subcommands:
 
 Beispiele:
   news_collect.py fetch --ticker RHM.DE --date 2026-10-16 \
-      --names "Rheinmetall" --isin DE0007030009 --max 10 \
+      --names "Rheinmetall" --isin DE0007030009 --max 30 \
       --out reports/.../news_supplement_RHM.DE_2026-10-16.json
   news_collect.py sources
 """
@@ -83,6 +83,9 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     de_argv = ["fetch", "--ticker", args.ticker, "--date", args.date,
                "--window-days", str(args.window_days), "--max", str(args.max),
+               "--sector-max", str(args.sector_max),
+               "--fach-max", str(args.fach_max),
+               "--forum-max", str(args.forum_max),
                "--out", str(de_snap)]
     log(f">> de_feeds fetch (Portale + Foren)")
     run_stage("de_feeds fetch", de_feeds, de_argv)
@@ -154,8 +157,14 @@ def main(argv=None) -> int:
     pf.add_argument("--names", nargs="*", help="Firmennamen (dpa + gnews Matching)")
     pf.add_argument("--isin", help="exakte ISIN (dpa fn:isin Tag)")
     pf.add_argument("--window-days", type=int, default=7)
-    pf.add_argument("--max", type=int, default=10,
-                    help="max Items im Supplement (Vendor-Limit im Framework: 10)")
+    pf.add_argument("--max", type=int, default=30,
+                    help="max Items im Supplement (Framework-/Vendor-Limit: 30)")
+    pf.add_argument("--sector-max", type=int, default=5,
+                    help="max Sektor-Kontext-Items ([Sektor]-Tag) im de-Snapshot")
+    pf.add_argument("--fach-max", type=int, default=10,
+                    help="max Fachquellen-Items ([Fachquelle]-Tag, hartpunkt/esut)")
+    pf.add_argument("--forum-max", type=int, default=3,
+                    help="max Forum-Posts (werden zuletzt aufgefüllt)")
     pf.add_argument("--no-market", action="store_true", help="Makro-Flash-Items deaktivieren")
     pf.add_argument("--out", default=None,
                     help="Supplement-Ziel (Default: news_supplement_<TICKER>_<DATE>.json in cwd)")

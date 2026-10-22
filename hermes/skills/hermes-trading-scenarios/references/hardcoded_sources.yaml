@@ -17,6 +17,14 @@
 #   esut.de (ESUT-Magazin, Mittler Report Verlag) .... OK (RSS 2.0, 6 Items)
 #   finanzen.net ................................ Akamai blockt Datacenter-IPs (403) -> disabled
 #   boerse.de / wallstreet-online .............. kein nutzbares öffentliches RSS von hier -> disabled
+#
+# Slot-Reihenfolge im de-Snapshot (seit 2026-10-22):
+#   1. Namens-Treffer (alle Feeds)               unbegrenzt bis --max
+#   2. Fachquellen (`all_items: true`)           Budget --fach-max (10)
+#   3. Sektor-Kontext ([Sektor]-Tag)             Budget --sector-max (5)
+#   4. Forum-Posts                               Budget --forum-max (3), zuletzt
+# Supplement-Deckel: --max 30 (Vendor-Limit in
+# tradingagents/dataflows/vendors/news_supplement.py, byte-Deckel 100 KB).
 # ============================================================================
 version: 1
 
@@ -24,7 +32,12 @@ sectors:
   defense:
     # Sektor-Kontext: News zu diesen Begriffen werden zusätzlich gesammelt
     # (max. --sector-max Items pro Run, als [Sektor] markiert).
+    # Zwei Gruppen: Firmennamen (Kurs-Treiber direkt) + Fähigkeits-/Beschaffungs-
+    # begriffe. Ohne die zweite Gruppe fällt capability-News durch den Filter,
+    # die keinen börsennotierten Namen im Titel trägt (Fregatten, Drohnenabwehr,
+    # Weltraum, Artillerie) — genau der Vorlauf, der Defense-Werte bewegt.
     keywords:
+      # --- Emittenten ---
       - Rheinmetall
       - Hensoldt
       - Airbus
@@ -35,8 +48,44 @@ sectors:
       - Renk
       - Aris
       - Eurodrone
-      - ESUT                  # ESUT-Magazin (esut.de) — Rüstungstechnik
-      - Hartpunkt             # hartpunkt.de — Rüstungs-/Drohnen-Nachrichten
+      - MBDA
+      - Safran
+      - Thales
+      - Leonardo
+      - BAE Systems
+      - Kongsberg
+      - Saab
+      - "Lockheed"
+      - "Raytheon"
+      - "RTX"
+      - "Northrop"
+      # --- Fähigkeiten / Beschaffung ---
+      - Drohne
+      - "unbemannt"
+      - Fregatte
+      - Korvette
+      - Marine
+      - Luftwaffe
+      - Heer
+      - Bundeswehr
+      - BAAINBw
+      - NATO
+      - Beschaffung
+      - Rüstung
+      - Lenkflugkörper
+      - Marschflugkörper
+      - Flugabwehr
+      - Drohnenabwehr
+      - Artillerie
+      - Weltraum
+      - Satellit
+      - Patriot
+      - Skyranger
+      - IRIS-T
+      - HIMARS
+      - Tomahawk
+      - Leopard
+      - Puma
 
 tickers:
   RHM.DE:
@@ -53,14 +102,37 @@ tickers:
         - RHM_Rheinmetall         #   dediziertes Sub inkl. Weekly-RHM-Thread
                                   # Default-US-Subs (wallstreetbets/stocks/investing): 0 RHM-Hits
 
+  # Weitere Defense-Titel: gleicher Sektor-Kontext (Fachquellen + Keywords).
+  # Ticker über Yahoo/OpenFIGI verifiziert (2026-10-22), ISIN bewusst NICHT
+  # eingetragen — erst gegen DPA-Feed-Tag prüfen, dann ergänzen.
+  HAG.DE:
+    names: [Hensoldt]
+    sector: defense
+  R3NK.DE:
+    names: [RENK, Renk]
+    sector: defense
+  OHB.DE:
+    names: [OHB]
+    sector: defense
+  AIR.PA:
+    names: [Airbus, "Airbus Defence"]
+    isin: NL0000235190            # verifiziert (de.wikipedia Airbus-Infobox)
+    sector: defense
+
 feeds:                            # RSS/Atom-Feeds; enabled=false zum Deaktivieren
-  # --- Rüstungsspezialisierte Quellen (Sektor-Defense, RHM-relevant) ---
+  # --- Rüstungsspezialisierte Quellen (Sektor-Defense) ---
+  # all_items: true => Fachquelle. Die Items umgehen den Namens-/Sektor-Filter
+  # und landen als [Fachquelle] im Snapshot (Budget: --fach-max, Default 10,
+  # vor dem Sektor-Kontext und vor den Foren). Nur für Quellen setzen, deren
+  # kompletter Feed sektor-relevant ist — nie für breite Wirtschaftspresse.
   - id: hartpunkt                   # Drohnen-/Rüstungs-Nachrichten (geprüft 2026-10-16)
     url: "https://www.hartpunkt.de/feed/"
     enabled: true
+    all_items: true
   - id: esut                        # ESUT-Magazin, Mittler Report Verlag (geprüft 2026-10-16)
     url: "https://esut.de/feed/"
     enabled: true
+    all_items: true
   # --- Breite Wirtschaftspresse ---
   - id: tagesschau_wirtschaft
     url: "https://www.tagesschau.de/wirtschaft/index~rss2.xml"

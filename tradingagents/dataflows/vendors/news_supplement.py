@@ -14,6 +14,9 @@ from tradingagents.dataflows.errors import (
     NoMarketDataError, VendorNotConfiguredError, VendorUnavailableError,
 )
 
+MAX_ITEMS = 30          # bounded evidence snapshot: 30 items per run
+MAX_BYTES = 100_000     # hard schema size cap (kept identical to run_analysis.py)
+
 
 def get_news_supplement(ticker: str, start_date: str, end_date: str) -> str:
     configured = get_config().get("news_supplement_path")
@@ -22,7 +25,7 @@ def get_news_supplement(ticker: str, start_date: str, end_date: str) -> str:
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
     try:
         path = Path(configured).expanduser()
-        if path.stat().st_size > 100_000:
+        if path.stat().st_size > MAX_BYTES:
             raise ValueError("news supplement exceeds 100 KB")
         raw = path.read_bytes()
         data = json.loads(raw)
@@ -31,8 +34,8 @@ def get_news_supplement(ticker: str, start_date: str, end_date: str) -> str:
         if date.fromisoformat(data["as_of"]) != end:
             raise ValueError("news supplement must match the requested as-of date")
         items = data["items"]
-        if not isinstance(items, list) or len(items) > 10:
-            raise ValueError("news supplement requires at most 10 items")
+        if not isinstance(items, list) or len(items) > MAX_ITEMS:
+            raise ValueError(f"news supplement requires at most {MAX_ITEMS} items")
         selected = []
         for item in items:
             published = date.fromisoformat(item["published_at"])

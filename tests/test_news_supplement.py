@@ -68,6 +68,27 @@ def test_no_qualifying_items_is_typed_no_data(tmp_path):
         get_news_supplement("RHM.DE", "2026-10-09", "2026-10-10")
 
 
+def test_item_cap_is_thirty(tmp_path):
+    """30 items pass, 31 are rejected (cap raised from 10 on 2026-10-22)."""
+    import copy
+    import pytest
+    from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
+    base = {"published_at": "2026-10-08", "title": "Disclosure", "source": "Issuer",
+            "url": "https://example.test/news", "excerpt": "Evidence text",
+            "retrieved_at": "2026-10-10T10:00:00+00:00"}
+    items = []
+    for i in range(31):
+        item = copy.deepcopy(base)
+        item["url"] = f"https://example.test/news/{i}"
+        item["title"] = f"Disclosure {i}"
+        items.append(item)
+    path = _snapshot(tmp_path, items=items[:30])
+    assert "WEB_RESEARCH_SUPPLEMENT" in get_news_supplement("RHM.DE", "2026-10-03", "2026-10-10")
+    _snapshot(tmp_path, items=items)
+    with pytest.raises(VendorUnavailableError, match="at most 30"):
+        get_news_supplement("RHM.DE", "2026-10-03", "2026-10-10")
+
+
 def test_oversized_snapshot_is_rejected(tmp_path):
     import pytest
     from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
