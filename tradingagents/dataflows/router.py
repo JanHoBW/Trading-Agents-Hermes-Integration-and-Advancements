@@ -27,6 +27,7 @@ from tradingagents.dataflows.vendors.finnhub import (
     get_news_finnhub,
 )
 from tradingagents.dataflows.vendors.fred import get_macro_data as get_fred_macro_data
+from tradingagents.dataflows.vendors.issuer_facts import get_ir_facts
 from tradingagents.dataflows.vendors.issuer_ir import get_news_issuer_ir
 from tradingagents.dataflows.vendors.issuer_rss import get_news_issuer_rss
 from tradingagents.dataflows.vendors.ureg_pdmr import (
@@ -106,6 +107,12 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_capital_market_disclosures",
         ]
+    },
+    "factual_ir_data": {
+        "description": "Issuer's own key figures, guidance and financial calendar",
+        "tools": [
+            "get_ir_facts",
+        ]
     }
 }
 
@@ -116,7 +123,7 @@ TOOLS_CATEGORIES = {
 # categories (prices, fundamentals, news) still raise so a broken primary is loud.
 # disclosure_data is optional because its only vendor covers German issuers: a
 # US ticker must get a scoped "not covered" note, never a failed tool call.
-OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets", "disclosure_data"}
+OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets", "disclosure_data", "factual_ir_data"}
 
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
@@ -184,6 +191,13 @@ VENDOR_METHODS = {
         # non-German ticker raises VendorNotConfiguredError and the optional
         # category degrades instead of failing the run.
         "ureg_capital": get_ureg_capital_market_disclosures,
+    },
+    # factual_ir_data
+    "get_ir_facts": {
+        # The issuer's own key figures/guidance/calendar from its IR facts
+        # endpoint (or, without one, from its newest release). Self-selects via
+        # the registry; also injected deterministically by event_context.
+        "issuer_facts": get_ir_facts,
     },
     # macro_data
     "get_macro_indicators": {

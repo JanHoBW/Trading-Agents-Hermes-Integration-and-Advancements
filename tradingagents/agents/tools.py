@@ -326,6 +326,30 @@ def get_capital_market_disclosures(
 
 
 @tool
+def get_ir_facts(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve the ISSUER'S OWN key figures, guidance, financial calendar and
+    share price from its investor-relations facts source.
+
+    This is the authoritative counterweight to vendor fundamentals: figures are
+    reported exactly as the issuer states them, with their reference date and
+    reporting perimeter (e.g. "Stand 31.12.2025, fortgeführte Aktivitäten"),
+    plus a delta against the previous stored read. Use it when a report quotes
+    revenue/margin/backlog/guidance and you need the issuer's own wording, and
+    never present a prior-year reference date as the current quarter.
+
+    Self-selects via the issuer registry; for an issuer without a configured
+    facts source it reports that no configured source covers the instrument.
+    Returns:
+        str: Key figures with reference dates, guidance wording, calendar, quote
+    """
+    return route_to_vendor("get_ir_facts", ticker, trade_date or None)
+
+
+@tool
 def get_macro_indicators(
     indicator: Annotated[
         str,

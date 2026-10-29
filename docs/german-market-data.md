@@ -82,6 +82,59 @@ Behaviour worth knowing:
 - **Not supported**: login walls, JS-only lists without a sitemap, and sites whose
   robots.txt forbids crawling (verified: `sap.com` = `Disallow: /`).
 
+### Issuer IR facts (`issuer_facts`) — key figures, guidance, calendar
+
+`issuer_ir` answers *what the issuer published*. It cannot answer *what the
+issuer's own key figures are*, because those sit in a block whose numbers are
+animated client-side: reading them out of the DOM returns scrambled digits
+(`0009`, `69889`, `6655928` on three loads of one page). `issuer_facts` reads
+that block from its structured source instead — one JSON request, cached 6 h:
+
+```json
+"RHM.DE": {
+  "ir_facts": {
+    "enabled": true,
+    "terms_checked": "2026-10-29: robots.txt allows the IR overview page and the JSON endpoints; internal analysis only",
+    "facts_json": "https://www.rheinmetall.com/api/de/meta/content-snippets/investor-relations/kennzahlen",
+    "quote_json": "https://www.rheinmetall.com/api/stock-teaser",
+    "overview_url": "https://www.rheinmetall.com/de/investor-relations/ueberblick",
+    "perimeter_note": "fortgeführte Aktivitäten (Kennzahlen Stand 31.12.2025)",
+    "facts_include": ["bestand", "umsatz", "ergebnis", "marge", "cashflow", "dividende"],
+    "calendar_verified": "2026-10-29",
+    "calendar": [{"date": "2026-11-05", "event": "Bericht 3. Quartal 2026", "place": "Online"}]
+  }
+}
+```
+
+Behaviour worth knowing:
+
+- **The walker is generic.** Any JSON containing `{"title": …, "value": …}` pairs
+  works, at any nesting depth; a leading unit in the label (`MrdEUR Umsatz`,
+  `EUR Dividende`) is moved into the value and footnote asterisks are dropped, so
+  a fact keeps the same key when the issuer switches from Mio to Mrd.
+- **The reference date and perimeter travel with the figures.** The vendor reads
+  `Stand: TT.MM.JJJJ` out of the response when the config leaves
+  `reference_date` empty, and the rendered block always states
+  "do not treat the reference date as the current quarter" — the single most
+  common misreading of an IR overview page.
+- **Delta against the previous read.** The last state is stored under
+  `<cache>/ir_facts/<TICKER>.json`; the next call lists only changes
+  (`GEAENDERT: Umsatz: 9,9 -> 8,8 Mrd EUR`, `KALENDER NEU: …`, guidance moves).
+  A historical (backdated) run reads but never overwrites that basis.
+- **Release-text fallback.** Without `facts_json` the vendor scans the newest
+  release reachable through the `ir` sitemap for guidance sentences (range,
+  margin, backlog) and labels the block as pattern-extracted prose. This keeps
+  every sitemap-configured issuer covered without a bespoke adapter.
+- **Fed twice**: deterministically into the event-context block (first source, so
+  it survives truncation) and as the `get_ir_facts` tool for the news and
+  fundamentals analysts.
+- **Calendar is deliberately static.** An IR calendar is HTML/JS; guessing at it is
+  worse than a dated statement someone verified. `calendar_verified` older than
+  120 days renders as `STALE, re-verify`, and `doctor` reports it as degraded.
+- **Gate**: no block, `enabled: false` or an empty `terms_checked` raises
+  `VendorNotConfiguredError`; the optional `factual_ir_data` category then
+  degrades to a coverage sentinel instead of failing the run.
+
 ## Alpha Vantage price fallback
 
 `core_stock_apis` defaults to `yfinance,alpha_vantage`: Yahoo remains primary and Alpha Vantage is tried only when Yahoo reports no usable data or is unavailable. A requested latest Yahoo bar with no `Close` is now rejected to let the configured secondary provider supply a complete bar instead of presenting an earlier session as current. The TradingAgents wrapper reads `ALPHA_VANTAGE_API_KEY` from the active Hermes profile's `.env` and passes it only to the child process; it is not included in wrapper output, reports, or provenance.
@@ -122,7 +175,7 @@ Ticker-agnostic limits that remain after the adapters above; each is reported as
 | DE insider transactions (PDMR) | **Closed — keyless**: the `ureg_pdmr` vendor reads the Unternehmensregister capital-market search (category "Eigengeschäfte von Führungskräften", PDMR id 80) with plain `requests` (no browser/CDP). It is first in the `get_insider_transactions` chain and self-selects via the issuer registry; non-registry tickers fall through to Finnhub. See below | Structured Art. 19 MAR fields per person (position, LEI, ISIN, price/volume, dates, place) with per-emitter entity validation and point-in-time filter |
 | Issuer first-party feed | **Partly closed — keyless, per issuer**: `issuer_ir` (first in the `get_news` chain) reads the issuer's own **sitemap**, filters release URLs by configured path patterns and slug date, and extracts the release text from the server-rendered article page. RHM.DE is the pilot (verified 2026-10-21: sitemap lists dated releases incl. Q1/H1/annual reports and the 08.10. credit-facility release; robots.txt allows it). `issuer_rss` stays for issuers that do publish a feed; SAP-style sites (`Disallow: /`) cannot be used | First-party wording for corporate events without a licensed aggregator; the vendor self-selects via the registry and needs an explicit `ir.terms_checked` before it is enabled |
 | DE capital-market disclosures (ad-hoc, voting rights, HV/capital measures, §50 WpHG) | **Closed — keyless**: `get_capital_market_disclosures` (vendor `ureg_capital`, category `disclosure_data`) reads the same Unternehmensregister search and serves categories 79 (Art. 17 MAR ad-hoc), 81 (WpHG §40/41), 83 (capital-market information: buy-backs, AGM, capital measures) and 89 (§50 WpHG), point-in-time on the publication date, DE/EN twins merged | The News Analyst gets official issuer events instead of inferring them from articles; for non-German listings the tool says the source does not cover the instrument — never "no event" |
-| Fundamentals for EU issuers | SEC EDGAR does not serve EU filers; the statements chain falls to Yahoo's restated figures | DE fundamentals are single-vendor; reconciliation covers price data, not EU statements |
+| Fundamentals for EU issuers | SEC EDGAR does not serve EU filers; the statements chain falls to Yahoo's restated figures. **Partly closed for the issuer's own headline figures** by `issuer_facts` (key figures, guidance, calendar with reference date and perimeter) — segment tables and full statements stay on Yahoo | DE fundamentals are single-vendor; reconciliation covers price data, not EU statements |
 | ETF top holdings/positions | **Closed — keyless**: the ETF profile block carries the top holdings via `yf.Ticker(...).funds_data.top_holdings` (ranked, weights in %, top 10), labelled with the fact that Yahoo supplies no as-of date for the snapshot | ETF exposure is visible in the fundamentals report; still no historical holdings or full constituent list |
 | dpa / comdirect / InvestingPro | Reviewed: licensed or customer-account APIs, no self-serve endpoint | Not integrated; manual cross-check only (see above) |
 

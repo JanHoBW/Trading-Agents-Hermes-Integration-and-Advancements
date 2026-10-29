@@ -82,7 +82,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.4.0"
+WRAPPER_VERSION = "2.5.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -160,9 +160,32 @@ def validate_supplement(path: str, ticker: str, as_of: str) -> None:
     if data.get("as_of") != as_of:
         raise ValueError(f"as_of must equal the run date {as_of}, got {data.get('as_of')!r}")
     items = data.get("items")
+    if items is None:
+        items = []
     if not isinstance(items, list) or len(items) > NEWS_SUPPLEMENT_MAX_ITEMS:
         raise ValueError(
             f"items must be a list of at most {NEWS_SUPPLEMENT_MAX_ITEMS} entries")
+    facts = data.get("facts")
+    if facts is not None:
+        # Facts are current-state figures with their own reference date; they
+        # are deliberately NOT bound to the headline window (see the repo's
+        # news_supplement vendor). Validate the shape, not the date.
+        if not isinstance(facts, dict):
+            raise ValueError("facts must be an object")
+        if not str(facts.get("reference_date", "")).strip():
+            raise ValueError("facts.reference_date is required")
+        figures = facts.get("figures")
+        if not isinstance(figures, list) or len(figures) > 40:
+            raise ValueError("facts.figures must be a list of at most 40 entries")
+        for i, figure in enumerate(figures):
+            if not isinstance(figure, dict):
+                raise ValueError(f"facts.figures[{i}] must be an object")
+            if not str(figure.get("label", "")).strip() or not str(figure.get("value", "")).strip():
+                raise ValueError(f"facts.figures[{i}] needs label and value")
+            if not str(figure.get("source_url", "")).startswith("https://"):
+                raise ValueError(f"facts.figures[{i}].source_url must be a public https URL")
+    if not items and not facts:
+        raise ValueError("supplement needs items and/or a facts block")
     for i, item in enumerate(items):
         if not str(item.get("url", "")).startswith("https://"):
             raise ValueError(f"items[{i}].url must be a public https URL")
@@ -873,6 +896,13 @@ try:
     out["memory_log_path"] = cfg.get("memory_log_path")
     out["issuer_registry_path"] = cfg.get("issuer_registry_path")
     out["benchmark_suffixes"] = sorted(cfg.get("benchmark_map") or {})
+    if ticker:
+        try:
+            from tradingagents.dataflows.vendors.issuer_facts import is_configured
+            configured, reason = is_configured(ticker)
+            out["ir_facts"] = {"configured": bool(configured), "reason": str(reason)}
+        except Exception as exc:
+            out["ir_facts"] = {"configured": False, "reason": type(exc).__name__ + ": " + str(exc)}
     log = TradingMemoryLog({"memory_log_path": cfg.get("memory_log_path")})
     entries = log.load_entries()
     out["memory_entries"] = len(entries)
@@ -985,7 +1015,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("news_supplement", "blocked", str(exc))
 
     # --- what the installed package knows -----------------------------------
-    health = _repo_health(root, ticker) if root else {"errors": ["no installation"]}
+    health: dict = _repo_health(root, ticker) if root else {"errors": ["no installation"]}
     if health.get("errors"):
         check("repo_probe", "blocked", "; ".join(health["errors"]))
     else:
@@ -1016,6 +1046,19 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 check("issuer_registry", "ok", str(path))
             except (OSError, json.JSONDecodeError) as exc:
                 check("issuer_registry", "blocked", f"invalid JSON: {exc}")
+
+    # --- IR facts adapter (feeds issue #4: onboarding trigger) ---------------
+    if ticker and not health.get("errors"):
+        facts_health = health.get("ir_facts") or {}
+        if facts_health.get("configured"):
+            reason = str(facts_health.get("reason") or "ok")
+            check("ir_facts", "ok" if reason == "ok" else "degraded",
+                  reason if reason != "ok" else "adapter configured (key figures/guidance/calendar)")
+        else:
+            check("ir_facts", "degraded",
+                  f"{facts_health.get('reason') or 'not configured'} — delegate the "
+                  f"ir-facts-onboarding skill to add an ir_facts block, or run with the "
+                  f"generic fallback (newest issuer release)")
 
     if "memory_entries" in health:
         status = "ok" if health.get("memory_writable") else "blocked"
@@ -1063,6 +1106,19 @@ def cmd_news(args: argparse.Namespace) -> None:
     news_out = out / f"news_supplement_{ticker}_{date}.json"
     if not build_news(ticker, date, names, isin, out, news_out):
         fail(f"News-Pipeline fehlgeschlagen (Log: {out / 'ta_news.log'})")
+    if getattr(args, "facts", False):
+        facts_out = out / f"ir_facts_{ticker}_{date}.json"
+        facts_cmd = [sys.executable, str(Path(__file__).resolve().parent / "news_collect.py"),
+                     "facts", "--ticker", ticker, "--date", date, "--out", str(facts_out)]
+        try:
+            result = subprocess.run(facts_cmd, capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"IR-Fakten-Snapshot fehlgeschlagen: {type(exc).__name__}: {exc}", file=sys.stderr)
+        else:
+            # A missing adapter is a scope statement, not a broken pipeline: report
+            # it and keep the news supplement usable.
+            print(str(facts_out) if result.returncode == 0 else
+                  f"IR-Fakten nicht verfügbar ({result.stderr.strip()[:200]})", file=sys.stderr)
     print(news_out)
 
 
@@ -1596,6 +1652,8 @@ def build_parser() -> argparse.ArgumentParser:
                         formatter_class=argparse.RawDescriptionHelpFormatter)
     pn.add_argument("ticker", type=ticker, help="Ticker, z. B. RHM.DE")
     pn.add_argument("date", nargs="?", type=iso_date, default=None, help="Analyse-Datum YYYY-MM-DD (Default: heute)")
+    pn.add_argument("--facts", action="store_true",
+                    help="zusätzlich einen IR-Fakten-Snapshot bauen (news_collect.py facts)")
     pn.set_defaults(func=cmd_news)
 
     pdoc = sub.add_parser("doctor", help="Pre-flight für unbeaufsichtigte Runs (Exit 0 ok / 3 degraded / 4 blocked)",

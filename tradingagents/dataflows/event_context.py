@@ -20,6 +20,7 @@ import logging
 from tradingagents.dataflows import windows
 from tradingagents.dataflows import coverage
 from tradingagents.dataflows.errors import VendorNotConfiguredError, VendorUnavailableError
+from tradingagents.dataflows.vendors.issuer_facts import get_ir_facts
 from tradingagents.dataflows.vendors.issuer_ir import get_news_issuer_ir
 from tradingagents.dataflows.vendors.ureg_pdmr import (
     get_ureg_capital_market_disclosures,
@@ -74,18 +75,21 @@ def compact_ureg(text: str, max_records: int = 8, max_bullets: int = 3,
     return "\n".join(out)
 
 
-def _render(ticker: str, start: str, end: str, blocks: list[str], missing: int) -> str:
+def _render(ticker: str, start: str, end: str, blocks: list[str], missing: int, sources: int) -> str:
     header = [
         f"## EVENT CONTEXT — first-party sources, {start} to {end}",
         "This block is deliberately wider than the headline window: it carries the",
         "corporate events that shaped the current thesis (releases, ad-hoc and",
-        "voting-rights disclosures, insider filings). It is not a substitute for",
-        "current news, and issuer wording is not independent corroboration.",
+        "voting-rights disclosures, insider filings) and the issuer's own key",
+        "figures / guidance / calendar. The figures block is current state, not",
+        "windowed — each figure carries its own reference date, and that date is",
+        "the one to quote. This is not a substitute for current news, and issuer",
+        "wording is not independent corroboration.",
         "A source listed as a gap produced no data here — do not read that as",
         "\"nothing happened\".",
         "",
     ]
-    if missing == 3:
+    if missing == sources:
         return "\n".join(header + [
             "_No first-party source is configured for this instrument (no issuer",
             "registry entry), so no event context is available._",
@@ -132,6 +136,10 @@ def build_event_context(ticker: str, trade_date: str, config: dict | None = None
     blocks: list[str] = []
     missing = 0
     loaders = (
+        # Figures first: they anchor every later qualitative statement in the
+        # prompt (a release about an order says little without the backlog).
+        ("event_context/ir_facts", "issuer_facts", "Issuer key figures, guidance and calendar",
+         lambda: get_ir_facts(ticker, as_of=end)),
         ("event_context/issuer_releases", "issuer_ir", "Issuer releases",
          lambda: get_news_issuer_ir(ticker, start, end,
                                     limit=EVENT_ISSUER_LIMIT,
@@ -149,4 +157,4 @@ def build_event_context(ticker: str, trade_date: str, config: dict | None = None
             missing += 1
         blocks.append(text)
 
-    return _render(ticker, start, end, blocks, missing)
+    return _render(ticker, start, end, blocks, missing, len(loaders))

@@ -137,12 +137,14 @@ def test_an_unavailable_source_is_labelled_differently_from_an_unconfigured_one(
     def unreachable(*a, **kw):
         raise VendorUnavailableError("timeout")
 
+    monkeypatch.setattr(event_context, "get_ir_facts", unreachable)
     monkeypatch.setattr(event_context, "get_news_issuer_ir", unreachable)
     monkeypatch.setattr(event_context, "get_ureg_capital_market_disclosures", unreachable)
     monkeypatch.setattr(event_context, "get_ureg_pdmr_insider_transactions", unreachable)
 
     out = event_context.build_event_context("RHM.DE", "2026-10-21", {})
-    assert out.count("GAP: source could not be retrieved") == 3
+    # Four first-party sources: IR facts, issuer releases, capital markets, insider.
+    assert out.count("GAP: source could not be retrieved") == 4
     assert "GAP: not configured" not in out
 
 

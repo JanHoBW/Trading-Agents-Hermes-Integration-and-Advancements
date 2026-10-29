@@ -120,6 +120,16 @@ def cmd_merge(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_facts(args: argparse.Namespace) -> int:
+    """IR-Fakten als Snapshot (deterministisch oder aus einer Recherche-JSON)."""
+    from news_sources import ir_facts_snapshot
+    argv = ["build" if not args.infile else "import", "--ticker", args.ticker,
+            "--date", args.date, "--out", args.out]
+    if args.infile:
+        argv += ["--in", args.infile]
+    return ir_facts_snapshot.main(argv)
+
+
 def cmd_sources(_args: argparse.Namespace) -> int:
     import os
     path = Path(os.environ.get("TRADINGAGENTS_SOURCES_YAML", "").strip()
@@ -181,9 +191,20 @@ def main(argv=None) -> int:
     ps = sub.add_parser("sources", help="YAML-Quellenstatus anzeigen")
     ps.set_defaults(fn=cmd_sources)
 
+    pf2 = sub.add_parser("facts", help="IR-Fakten als Snapshot (Kennzahlen/Guidance/Kalender)")
+    pf2.add_argument("--ticker", required=True)
+    pf2.add_argument("--date", required=True, help="as_of, YYYY-MM-DD")
+    pf2.add_argument("--in", dest="infile", default=None,
+                     help="Recherche-JSON importieren statt den Vendor zu lesen")
+    pf2.add_argument("--out", default=None,
+                     help="Ziel (Default: ir_facts_<TICKER>_<DATE>.json in cwd)")
+    pf2.set_defaults(fn=cmd_facts)
+
     args = ap.parse_args(argv)
     if args.cmd == "fetch" and not args.out:
         args.out = f"news_supplement_{args.ticker}_{args.date}.json"
+    if args.cmd == "facts" and not args.out:
+        args.out = f"ir_facts_{args.ticker}_{args.date}.json"
     return args.fn(args)
 
 
