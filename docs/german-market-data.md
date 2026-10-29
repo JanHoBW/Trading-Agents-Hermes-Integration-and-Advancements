@@ -136,6 +136,22 @@ Behaviour worth knowing:
 - **Calendar is deliberately static.** An IR calendar is HTML/JS; guessing at it is
   worse than a dated statement someone verified. `calendar_verified` older than
   120 days renders as `STALE, re-verify`, and `doctor` reports it as degraded.
+- **Two fallback shapes for issuers without a facts endpoint** (verified on
+  Siemens Energy ENR.DE, 2026-10-29):
+  * `release_index` — the release URLs carry **no date** (so a sitemap cannot
+    place them in time) while the IR page is server-rendered and lists every
+    publication with a date. A config-supplied `entry_regex` (title + date),
+    `date_format` and `block_chars` parse that page; each entry's body ends at
+    the next entry, not after a fixed window (a fixed window pulled the next
+    panel's figures in and mis-dated them). The newest entry whose *title*
+    matches a results publication supplies the block; all entries feed a
+    "latest publications" list.
+  * `prose_facts` — a list of `{label, regex, prefix?, suffix?}` (value from the
+    named group `v` or group 1) applied to that results entry's text. This is how
+    an issuer that only states figures in prose gets a fact block without code;
+    a pattern that stops matching yields nothing rather than a stale number.
+  With `release_index` the reference date is the results entry's own date, so a
+  Q3 block is dated to the Q3 release, not to the newest buyback announcement.
 - **Gate**: no block, `enabled: false` or an empty `terms_checked` raises
   `VendorNotConfiguredError`; the optional `factual_ir_data` category then
   degrades to a coverage sentinel instead of failing the run.

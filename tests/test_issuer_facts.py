@@ -198,6 +198,95 @@ def test_guess_reference_date_reads_the_german_footnote():
 
 
 # ---------------------------------------------------------------------------
+# Release index (issuers with undated slugs and no facts endpoint)
+# ---------------------------------------------------------------------------
+
+INDEX_HTML = """<div data-cmp-data-layer="{&#34;dc:title&#34;:&#34;Siemens Energy announces buyback - September 23, 2026&#34;}">
+  <p>Die Gesellschaft kauft Aktien zurueck.</p></div>
+<div data-cmp-data-layer="{&#34;dc:title&#34;:&#34;Siemens Energy Q3 FY26 Earnings Release - August 5, 2026&#34;}">
+  <p>Orders reached another record level of &euro;17.9bn. Order backlog increased to &euro;162bn.</p></div>
+<div data-cmp-data-layer="{&#34;dc:title&#34;:&#34;Ohne Datum - tbd&#34;}">
+  <p>ignoriert</p></div>"""
+
+INDEX_CFG = {
+    "url": "https://example.com/ir.html",
+    "entry_regex": "&#34;dc:title&#34;:&#34;(?P<title>[^&]{10,200}?)\\s*-\\s*(?P<date>[A-Z][a-z]+ \\d{1,2}, \\d{4})&#34;",
+    "date_format": "%B %d, %Y",
+    "block_chars": 15000,
+}
+
+
+@pytest.mark.unit
+def test_parse_release_index_reads_dates_and_bounds_each_body():
+    entries = issuer_facts.parse_release_index(INDEX_HTML, INDEX_CFG)
+    assert [e["date"] for e in entries] == ["2026-09-23", "2026-08-05"]
+    assert entries[0]["title"].startswith("Siemens Energy announces buyback")
+    # The body must stop at the next entry: a fixed window used to pull the
+    # following panel's figures into this entry (and mis-date them).
+    assert "17.9" not in entries[0]["text"]
+    assert "17.9bn" in entries[1]["text"]
+
+
+@pytest.mark.unit
+def test_parse_release_index_skips_a_title_without_a_parsable_date():
+    entries = issuer_facts.parse_release_index(INDEX_HTML, INDEX_CFG)
+    assert all("tbd" not in e["title"].lower() for e in entries)
+
+
+@pytest.mark.unit
+def test_apply_prose_facts_uses_named_group_and_affixes():
+    patterns = [{"label": "Orders", "regex": r"record level of EUR(?P<v>[\d.,]+)bn",
+                 "suffix": " Mrd EUR"},
+                {"label": "Margin", "regex": r"margin of (\d+%)", "prefix": "rund "}]
+    facts = issuer_facts.apply_prose_facts("record level of EUR17.9bn, margin of 19%", patterns)
+    assert facts == {"Orders": "17.9 Mrd EUR", "Margin": "rund 19%"}
+
+
+@pytest.mark.unit
+def test_apply_prose_facts_yields_nothing_when_a_pattern_stops_matching():
+    patterns = [{"label": "Orders", "regex": r"record level of EUR(?P<v>[\d.,]+)bn"}]
+    assert issuer_facts.apply_prose_facts("the wording changed completely", patterns) == {}
+
+
+@pytest.mark.unit
+def test_release_index_path_produces_facts_and_dates_them_to_the_results_entry(monkeypatch, instrument):
+    instrument["ir_facts"] = {
+        "enabled": True, "terms_checked": "2026-10-29: robots allows it",
+        "overview_url": "https://example.com/ir.html",
+        "release_index": INDEX_CFG,
+        "prose_facts": [
+            {"label": "Auftragseingang", "regex": r"record level of EUR(?P<v>[\d.,]+)bn", "suffix": " Mrd EUR"},
+            {"label": "Auftragsbestand", "regex": r"backlog increased to EUR(?P<v>[\d.,]+)bn", "suffix": " Mrd EUR"},
+        ],
+        "perimeter_note": "Q3 FY2026",
+    }
+    monkeypatch.setattr(issuer_facts, "load_instrument", lambda t, config=None: instrument)
+    monkeypatch.setattr(issuer_facts, "_fetch_text", lambda url, seconds: INDEX_HTML.replace("&euro;", "EUR"))
+
+    facts = issuer_facts.collect_ir_facts("ENR.DE")
+    assert facts["facts"] == {"Auftragseingang": "17.9 Mrd EUR", "Auftragsbestand": "162 Mrd EUR"}
+    # Reference date is the *results* entry, not the newest entry on the page.
+    assert facts["reference_date"] == "2026-08-05"
+    assert [e["date"] for e in facts["latest_publications"]] == ["2026-09-23", "2026-08-05"]
+
+
+@pytest.mark.unit
+def test_release_index_without_a_facts_endpoint_passes_the_config_gate():
+    cfg = issuer_facts._facts_config(
+        {"ir_facts": {"enabled": True, "terms_checked": "ok", "release_index": INDEX_CFG}}, "ENR.DE")
+    assert cfg["release_index"]["url"] == "https://example.com/ir.html"
+    assert cfg["facts_json"] == ""
+
+
+@pytest.mark.unit
+def test_release_index_with_a_non_https_url_is_refused():
+    bad = dict(INDEX_CFG, url="http://example.com/ir.html")
+    with pytest.raises(VendorNotConfiguredError, match="HTTPS"):
+        issuer_facts._facts_config(
+            {"ir_facts": {"enabled": True, "terms_checked": "ok", "release_index": bad}}, "ENR.DE")
+
+
+# ---------------------------------------------------------------------------
 # Delta
 # ---------------------------------------------------------------------------
 

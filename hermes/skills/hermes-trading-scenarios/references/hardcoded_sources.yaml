@@ -29,6 +29,11 @@
 version: 1
 
 sectors:
+  energy:
+    keywords: ["Siemens Energy", "Siemens Gamesa", "Energiewende", "Stromnetz",
+               "Netzausbau", "Gasturbine", "Windkraft", "Offshore", "HGÜ",
+               "Umspannwerk", "Elektrolyse", "Wasserstoff", "Kraftwerk"]
+    max_items: 5
   defense:
     # Sektor-Kontext: News zu diesen Begriffen werden zusätzlich gesammelt
     # (max. --sector-max Items pro Run, als [Sektor] markiert).
@@ -101,6 +106,13 @@ tickers:
         - wallstreetbetsGER       #   ~20 RHM-Posts/Woche (DE-Mirror von WSB)
         - RHM_Rheinmetall         #   dediziertes Sub inkl. Weekly-RHM-Thread
                                   # Default-US-Subs (wallstreetbets/stocks/investing): 0 RHM-Hits
+  ENR.DE:
+    names: [Siemens Energy, Siemens Energy AG]
+    isin: DE000ENER6Y0            # verifiziert: Chart-Widget der IR-Seite (WKN ENER6Y)
+    sector: energy
+    reddit:
+      queries: [Siemens Energy]
+      subreddits: [wallstreetbetsGER, Aktien]
 
   # Weitere Defense-Titel: gleicher Sektor-Kontext (Fachquellen + Keywords).
   # Ticker über Yahoo/OpenFIGI verifiziert (2026-10-22), ISIN bewusst NICHT

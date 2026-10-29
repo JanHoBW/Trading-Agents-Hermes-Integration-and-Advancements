@@ -91,7 +91,7 @@ _MARGIN_RE = re.compile(
 # enough for DE/EN issuers; a miss only costs one more fetch.
 _RESULTS_SLUG_RE = re.compile(
     r"(ergebnis|halbjahr|quartal|geschaeftsjahr|geschäftsjahr|bilanz|finanzbericht|"
-    r"jahresabschluss|prognose|ausblick|rekord|zahlen|results|half-year|quarter|annual|outlook)",
+    r"jahresabschluss|prognose|ausblick|rekord|zahlen|results|earnings|half-year|quarter|annual|outlook)",
     re.IGNORECASE,
 )
 # Sentences that state a *forward* expectation. Achieved figures and order news
@@ -169,6 +169,118 @@ def normalize_fact(title: str, value: str) -> tuple[str, str]:
             else:
                 val = f"{val} {unit.replace('Mrd', 'Mrd ').replace('Mio', 'Mio ').strip()}"
     return label, val
+
+
+DEFAULT_OVERVIEW_CACHE_SECONDS = 3600
+MAX_INDEX_ENTRIES = 20
+MAX_INDEX_TEXT = 6000
+
+
+def _strip_html(chunk: str) -> str:
+    """Readable text from an HTML fragment (tags out, entities and space normalised)."""
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", chunk, flags=re.S | re.I)
+    text = re.sub(r"<br\s*/?>|</p>|</tr>|</div>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&#34;", '"'), ("&#39;", "'"),
+                         ("&quot;", '"'), ("&euro;", "EUR"), ("&uuml;", "ü"),
+                         ("&auml;", "ä"), ("&ouml;", "ö"), ("&szlig;", "ß")):
+        text = text.replace(entity, char)
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n", text).strip()
+
+
+def parse_release_index(html: str, cfg: dict) -> list[dict]:
+    """Dated entries from a server-rendered IR index page.
+
+    Some issuers have no facts endpoint *and* no date in their release URLs (so
+    the sitemap cannot place a release in time), while their IR page is
+    server-rendered and lists every publication with a date. This parses exactly
+    that: a config-supplied regex for the entry (title + date) and the following
+    block of text as the entry body.
+
+    Configuration, not code — the regex lives in the issuer registry::
+
+        "release_index": {
+          "url": "https://…/investor-relations.html",
+          "entry_regex": "&#34;dc:title&#34;:&#34;(?P<title>[^&]{10,200}?)\\s*-\\s*(?P<date>[A-Z][a-z]+ \\d{1,2}, \\d{4})&#34;",
+          "date_format": "%B %d, %Y",
+          "block_chars": 15000
+        }
+    """
+    try:
+        pattern = re.compile(cfg["entry_regex"])
+    except (re.error, KeyError) as exc:
+        raise VendorNotConfiguredError(f"ir_facts.release_index.entry_regex is invalid: {exc}") from None
+    date_format = cfg.get("date_format") or "%Y-%m-%d"
+    block_chars = int(cfg.get("block_chars") or 15000)
+    entries: list[dict] = []
+    matches = list(pattern.finditer(html))
+    for index, match in enumerate(matches):
+        raw_date = (match.groupdict().get("date") or "").strip()
+        try:
+            when = datetime.strptime(raw_date, date_format).date().isoformat()
+        except ValueError:
+            continue
+        # The body ends at the next entry: a fixed character window runs into the
+        # following panels, which attributed the Q3 figures to the buyback entry
+        # that happened to precede them on the page.
+        end = matches[index + 1].start() if index + 1 < len(matches) else match.end() + block_chars
+        body = _strip_html(html[match.end():min(end, match.end() + block_chars)])
+        entries.append({
+            "date": when,
+            "title": re.sub(r"\s+", " ", match.groupdict().get("title") or "").strip(),
+            "text": body[:MAX_INDEX_TEXT],
+        })
+    entries.sort(key=lambda e: e["date"], reverse=True)
+    return entries[:MAX_INDEX_ENTRIES]
+
+
+def _fetch_text(url: str, cache_seconds: int) -> str:
+    """HTML body of a page, cached for ``cache_seconds`` (same store as the JSON)."""
+    if urlparse(url).scheme != "https":
+        raise VendorNotConfiguredError(f"IR page must be HTTPS, got {url!r}")
+    raw = _cache_get(url)
+    if raw is None:
+        try:
+            response = get_scrubbed(url, params={}, timeout=REQUEST_TIMEOUT, secret="")
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise VendorUnavailableError(f"IR page request failed: {exc}") from None
+        raw = response.text
+        if len(raw.encode("utf-8")) > MAX_JSON_BYTES:
+            raise VendorUnavailableError("IR page exceeds the size limit")
+        _cache_put(url, raw)
+    return raw
+
+
+def apply_prose_facts(text: str, patterns: list[dict]) -> dict[str, str]:
+    """Labeled figures from release prose using config-supplied regexes.
+
+    Each entry is ``{"label": "...", "regex": "..."}``; the value is the named
+    group ``v`` or the first group. This is the escape hatch for an issuer that
+    publishes a figure only in prose: the *pattern* is configuration, so a new
+    issuer still needs no code — but it is labelled as pattern-extracted, and a
+    pattern that stops matching simply yields nothing rather than a stale number.
+    """
+    facts: dict[str, str] = {}
+    flat = re.sub(r"\s+", " ", text or "")
+    for entry in patterns:
+        label, pattern = entry.get("label"), entry.get("regex")
+        if not label or not pattern:
+            continue
+        try:
+            match = re.search(pattern, flat, re.IGNORECASE)
+        except re.error:
+            continue
+        if not match:
+            continue
+        value = match.groupdict().get("v") or (match.group(1) if match.groups() else "")
+        if not value:
+            continue
+        facts[str(label).strip()] = (
+            str(entry.get("prefix") or "") + value.strip() + str(entry.get("suffix") or "")
+        ).strip()
+    return facts
 
 
 def extract_quote(node) -> dict:
@@ -361,6 +473,13 @@ def render_ir_facts(facts: dict, *, delta: list[str] | None = None) -> str:
             "  - Extract by pattern match on prose; quote the wording, not just the numbers."
         )
 
+    latest = facts.get("latest_publications") or []
+    if latest:
+        lines.append("")
+        lines.append("- Latest IR publications (dates from the issuer's own index page):")
+        for entry in latest[:5]:
+            lines.append(f"  - {entry.get('date')}: {str(entry.get('title') or '')[:120]}")
+
     calendar = facts.get("calendar") or []
     if calendar:
         lines.append("")
@@ -481,12 +600,23 @@ def _facts_config(instrument: dict, ticker: str) -> dict:
         "calendar": [c for c in (block.get("calendar") or []) if isinstance(c, dict)],
         "calendar_verified": str(block.get("calendar_verified") or "").strip(),
         "facts_include": [str(p) for p in (block.get("facts_include") or [])],
+        "release_index": block.get("release_index") if isinstance(block.get("release_index"), dict) else {},
+        "prose_facts": [e for e in (block.get("prose_facts") or [])
+                        if isinstance(e, dict) and e.get("label") and e.get("regex")],
         "terms_checked": str(block["terms_checked"]).strip(),
     }
-    if not config["facts_json"] and not _fallback_source(instrument):
+    if config["release_index"]:
+        url = str(config["release_index"].get("url") or "").strip()
+        if urlparse(url).scheme != "https" or not urlparse(url).hostname:
+            raise VendorNotConfiguredError(
+                f"ir_facts.release_index.url for {ticker} must be an HTTPS URL")
+        if not str(config["release_index"].get("entry_regex") or "").strip():
+            raise VendorNotConfiguredError(
+                f"ir_facts.release_index for {ticker} has no entry_regex")
+    if not config["facts_json"] and not config["release_index"] and not _fallback_source(instrument):
         raise VendorNotConfiguredError(
-            f"IR facts source for {ticker} has neither facts_json nor a usable ir "
-            f"sitemap for the release-text fallback"
+            f"IR facts source for {ticker} has neither facts_json, a release_index, "
+            f"nor a usable ir sitemap for the release-text fallback"
         )
     return config
 
@@ -587,7 +717,35 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
     guidance: dict[str, str] = {}
     guidance_date = ""
     guidance_source: list[str] = [""]
-    if facts and _fallback_source(instrument):
+    latest: list[dict] = []
+
+    if not facts and cfg["release_index"]:
+        # No facts endpoint, and the release URLs carry no date — so the sitemap
+        # cannot place a release in time. The IR page itself is server-rendered
+        # and lists every publication with a date; parse that page instead.
+        index_cfg = cfg["release_index"]
+        page = _fetch_text(index_cfg["url"], DEFAULT_OVERVIEW_CACHE_SECONDS)
+        entries = parse_release_index(page, index_cfg)
+        if not entries:
+            raise VendorUnavailableError(
+                f"no dated entry matched ir_facts.release_index.entry_regex on {index_cfg['url']}"
+            )
+        latest = entries[:5]
+        target = next((e for e in entries if _RESULTS_SLUG_RE.search(e["title"])), entries[0])
+        facts = apply_prose_facts(target["text"], cfg["prose_facts"])
+        guidance = extract_guidance(target["text"])
+        guidance_date = target["date"]
+        guidance_source[0] = cfg["overview_url"] or index_cfg["url"]
+        source = cfg["overview_url"] or index_cfg["url"]
+        if not reference:
+            reference = target["date"]
+        if not facts and not guidance:
+            facts_error = (
+                "neither a prose_facts pattern nor a guidance sentence matched the newest "
+                f"results entry ({target['date']}); report the figures as unavailable"
+            )
+
+    if facts and _fallback_source(instrument) and not guidance:
         # The facts block states the last completed year's figures; the current
         # guidance lives in the newest release. Both belong in the prompt — a
         # prior-year backlog next to a cut guidance range is the whole point.
@@ -600,7 +758,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         except (VendorNotConfiguredError, VendorUnavailableError):
             guidance = {}
             guidance_date = ""
-    if not facts:
+    if not facts and not cfg["release_index"]:
         # No facts endpoint: fall back to the newest release's wording. Coarser,
         # and the block says so, but it keeps every sitemap-configured issuer
         # covered without a bespoke adapter.
@@ -649,6 +807,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         "calendar_verified": verified,
         "calendar_stale": stale,
         "facts_error": facts_error,
+        "latest_publications": latest,
     }
     return result
 
