@@ -126,12 +126,65 @@ def test_extract_quote_matches_by_shape():
 
 
 @pytest.mark.unit
-def test_extract_guidance_reads_range_margin_and_backlog():
+def test_extract_guidance_reads_the_forward_range_and_margin():
     guidance = issuer_facts.extract_guidance(RELEASE)
     assert guidance["guidance_range"] == "13,7 bis 14,2 Mrd"
     assert guidance["guidance_margin"] == "19 %"
-    assert guidance["backlog"] == "63.800 Mio"
     assert "Spanne" in guidance["guidance_sentence"]
+
+
+@pytest.mark.unit
+def test_extract_guidance_prefers_the_guided_margin_over_the_achieved_one():
+    """Regression: an H1 release states the achieved margin before the guided one.
+
+    Reading the prose in order reported 15,0 % (H1 actual) as the 2026 guidance;
+    the guided figure is 19 %. Only sentences with forward context may match.
+    """
+    text = (
+        "Die operative Ergebnismarge lag im ersten Halbjahr bei 15,0 % auf Konzernebene. "
+        "Für das Geschäftsjahr 2026 rechnet der Konzern mit einem Umsatz in der Spanne "
+        "von 13,7 MrdEUR bis 14,2 MrdEUR und einer operativen Ergebnismarge von rund 19 %."
+    )
+    guidance = issuer_facts.extract_guidance(text)
+    assert guidance["guidance_range"] == "13,7 bis 14,2 Mrd"
+    assert guidance["guidance_margin"] == "19 %"
+
+
+@pytest.mark.unit
+def test_extract_guidance_rejects_a_margin_that_precedes_its_context_word():
+    """Bullet headers carry no full stop, so the achieved figure shares a sentence.
+
+    Real H1 header: "Operative Ergebnismarge bei 15,0% … Angepasste Jahresprognose
+    2026". Only a guidance keyword *before* the number may qualify it.
+    """
+    text = ("Operative Ergebnismarge bei 15,0% auf Konzernebene Operativer Free Cashflow "
+            "bei -1.616 MioEUR Angepasste Jahresprognose 2026 in Folge der F126-Entscheidung")
+    assert "guidance_margin" not in issuer_facts.extract_guidance(text)
+
+
+@pytest.mark.unit
+def test_backlog_is_never_extracted_from_prose():
+    """Group and segment backlog look identical to a regex; the facts block owns it."""
+    text = ("Der Rheinmetall Backlog lag am 30. Juni 2026 bei 28.829 MioEUR. "
+            "Der Konzern erwartet für 2026 eine Marge von rund 19 %.")
+    assert "backlog" not in issuer_facts.extract_guidance(text)
+
+
+@pytest.mark.unit
+def test_guidance_scan_prefers_results_publications_over_current_news(monkeypatch, instrument):
+    """Order news is newer than the H1 report; the H1 report is where guidance is."""
+    instrument["ir"] = {"enabled": True, "sitemap": "https://example.com/sitemap.xml",
+                        "url_patterns": ["/news/"]}
+    entries = [{"date": "2026-10-22", "url": "https://example.com/de/news/2026-10-22-grossauftrag"},
+               {"date": "2026-08-06", "url": "https://example.com/de/news/2026-08-06-halbjahresfinanzbericht"}]
+    monkeypatch.setattr(issuer_facts.issuer_ir, "_sitemap_urls", lambda url: ["x"])
+    monkeypatch.setattr(issuer_facts.issuer_ir, "dated_entries", lambda *a, **kw: entries)
+    monkeypatch.setattr(issuer_facts.issuer_ir, "_allowed", lambda url: True)
+    monkeypatch.setattr(issuer_facts.issuer_ir, "fetch_article",
+                        lambda url: ("t", "Der Konzern erwartet eine Marge von rund 19 %.", []))
+    guidance, when, _url = issuer_facts._guidance_from_releases(instrument, limit=2)
+    assert when == "2026-08-06"
+    assert guidance["guidance_margin"] == "19 %"
 
 
 @pytest.mark.unit

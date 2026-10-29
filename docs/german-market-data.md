@@ -121,10 +121,15 @@ Behaviour worth knowing:
   `<cache>/ir_facts/<TICKER>.json`; the next call lists only changes
   (`GEAENDERT: Umsatz: 9,9 -> 8,8 Mrd EUR`, `KALENDER NEU: …`, guidance moves).
   A historical (backdated) run reads but never overwrites that basis.
-- **Release-text fallback.** Without `facts_json` the vendor scans the newest
-  release reachable through the `ir` sitemap for guidance sentences (range,
-  margin, backlog) and labels the block as pattern-extracted prose. This keeps
-  every sitemap-configured issuer covered without a bespoke adapter.
+- **Guidance from the release text, with the facts block present or not.** The
+  newest *results* release reachable through the `ir` sitemap is scanned
+  (results-like slugs ranked first — guidance sits in the H1/annual publication,
+  not in last week's order news). Only sentences in forward-looking context may
+  match: a results release prints the achieved margin ("15,0 %") before the
+  guided one ("rund 19 % erwartet"), and reading in document order reported the
+  achieved figure. **Backlog is never taken from prose** — group and segment
+  numbers are indistinguishable to a regex, and the facts block owns the figure.
+  The block names the release date and URL next to the extracted range/margin.
 - **Fed twice**: deterministically into the event-context block (first source, so
   it survives truncation) and as the `get_ir_facts` tool for the news and
   fundamentals analysts.

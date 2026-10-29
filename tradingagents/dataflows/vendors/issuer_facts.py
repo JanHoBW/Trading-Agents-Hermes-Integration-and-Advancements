@@ -21,7 +21,7 @@ The block is small and highly structured, so it is served deterministically:
   ``calendar_verified``): IR calendars are HTML/JS and guessing at them is worse
   than a dated statement someone checked.
 * ``guidance`` — when no facts endpoint exists, the newest release from the
-  issuer sitemap is scanned for guidance sentences (range, margin, backlog).
+  issuer sitemap is scanned for guidance sentences (forward range and margin).
   Coarser than a facts block, and labelled as such.
 
 Every rendered block carries its reference date, its perimeter (continued vs
@@ -87,9 +87,18 @@ _MARGIN_RE = re.compile(
     r"(?:operative[n]?\s+)?(?:Ergebnis|EBIT|Umsatz)?marge[^.\d]{0,60}?(\d{1,3}(?:[.,]\d)?)\s*%",
     re.IGNORECASE,
 )
-_BACKLOG_RE = re.compile(
-    r"(?:Auftragsbestand|Auftragsbacklog|Backlog|Order Backlog)[^.\d]{0,90}?"
-    r"(\d[\d.,]*)\s*(Mio|Mrd)",
+# Slugs of results publications, where guidance is stated. Language-agnostic
+# enough for DE/EN issuers; a miss only costs one more fetch.
+_RESULTS_SLUG_RE = re.compile(
+    r"(ergebnis|halbjahr|quartal|geschaeftsjahr|geschäftsjahr|bilanz|finanzbericht|"
+    r"jahresabschluss|prognose|ausblick|rekord|zahlen|results|half-year|quarter|annual|outlook)",
+    re.IGNORECASE,
+)
+# Sentences that state a *forward* expectation. Achieved figures and order news
+# must not match, or the extraction reports last period's actuals as guidance.
+_GUIDANCE_CONTEXT_RE = re.compile(
+    r"(prognose|rechnet|erwartet|erwartete|ausblick|guidance|outlook|anvisiert|"
+    r"projektiert|zielt|plant|strebt)",
     re.IGNORECASE,
 )
 
@@ -194,24 +203,51 @@ def extract_quote(node) -> dict:
 
 
 def extract_guidance(text: str) -> dict:
-    """Guidance sentences from release prose: range, margin, backlog.
+    """Guidance sentences from release prose: forward range and margin only.
+
+    Two deliberate narrowings, both learned from a real H1 release:
+
+    * Only **sentences with guidance context** are scanned. A results release
+      states the achieved margin ("Ergebnismarge 15,0 %") before it states the
+      guided one ("Ergebnismarge rund 19 % erwartet"); reading the text in order
+      picked the achieved figure.
+    * **Backlog is not extracted from prose at all.** The same release quotes a
+      group backlog and one per segment; a regex cannot tell them apart, and the
+      authoritative number is in the facts block anyway.
 
     Only what the text states is returned; a missing pattern stays missing.
     """
     guidance: dict[str, str] = {}
     flat = re.sub(r"\s+", " ", text or "")
-    span = _RANGE_RE.search(flat)
-    if span:
-        low, high, unit = span.group(1), span.group(2), (span.group(3) or "").strip()
-        guidance["guidance_range"] = f"{low} bis {high}{(' ' + unit) if unit else ''}".strip()
-        start = max(0, span.start() - 120)
-        guidance["guidance_sentence"] = flat[start:span.end() + 60].strip(" .;-")
-    margin = _MARGIN_RE.search(flat)
-    if margin:
-        guidance["guidance_margin"] = f"{margin.group(1)} %"
-    backlog = _BACKLOG_RE.search(flat)
-    if backlog:
-        guidance["backlog"] = f"{backlog.group(1)} {backlog.group(2)}"
+    sentences = [s for s in re.split(r"(?<=[.!?;])\s+", flat) if s.strip()]
+    candidates = [s for s in sentences if _GUIDANCE_CONTEXT_RE.search(s)] or [flat]
+
+    def follows_context(sentence: str, position: int, window: int = 200) -> bool:
+        """Is a guidance keyword close *before* ``position`` in this sentence?
+
+        Bullet-style headers ("Operative Marge 15,0 % … Angepasste Jahresprognose")
+        contain no full stop, so sentence splitting does not separate the achieved
+        figure from the word that made the sentence a candidate. Requiring the
+        keyword to precede the number is what rejects the achieved figure.
+        """
+        for found in _GUIDANCE_CONTEXT_RE.finditer(sentence):
+            if 0 <= position - found.start() <= window:
+                return True
+        return False
+
+    for sentence in candidates:
+        if "guidance_range" not in guidance:
+            span = _RANGE_RE.search(sentence)
+            if span:
+                low, high, unit = span.group(1), span.group(2), (span.group(3) or "").strip()
+                guidance["guidance_range"] = f"{low} bis {high}{(' ' + unit) if unit else ''}".strip()
+                guidance["guidance_sentence"] = sentence.strip(" .;-")[:400]
+        if "guidance_margin" not in guidance:
+            margin = _MARGIN_RE.search(sentence)
+            if margin and follows_context(sentence, margin.start()):
+                guidance["guidance_margin"] = f"{margin.group(1)} %"
+        if "guidance_range" in guidance and "guidance_margin" in guidance:
+            break
     return guidance
 
 
@@ -239,7 +275,7 @@ def diff_facts(old: dict | None, new: dict) -> list[str]:
             changes.append(f"GEAENDERT: {label}: {before} -> {after}")
 
     old_g, new_g = old.get("guidance") or {}, new.get("guidance") or {}
-    for key in ("guidance_range", "guidance_margin", "backlog"):
+    for key in ("guidance_range", "guidance_margin"):
         before, after = old_g.get(key), new_g.get(key)
         if before and after and before != after:
             changes.append(f"GEAENDERT: {key}: {before} -> {after}")
@@ -310,8 +346,13 @@ def render_ir_facts(facts: dict, *, delta: list[str] | None = None) -> str:
     guidance = facts.get("guidance") or {}
     if guidance:
         lines.append("")
-        lines.append(f"- Guidance (extracted from release text dated {facts.get('guidance_date') or 'n/a'}):")
-        for key in ("guidance_range", "guidance_margin", "backlog"):
+        origin = facts.get("guidance_source") or ""
+        lines.append(
+            f"- Guidance (extracted from release text dated {facts.get('guidance_date') or 'n/a'}"
+            + (f", {origin}" if origin else "")
+            + "):"
+        )
+        for key in ("guidance_range", "guidance_margin"):
             if guidance.get(key):
                 lines.append(f"  - {key}: {guidance[key]}")
         if guidance.get("guidance_sentence"):
@@ -484,6 +525,39 @@ def _latest_release_text(instrument: dict) -> tuple[str, str, str]:
     raise VendorUnavailableError("no readable issuer release found for the guidance fallback")
 
 
+def _guidance_from_releases(instrument: dict, limit: int = 6) -> tuple[dict, str, str]:
+    """``(guidance, date, url)`` from the newest release that states guidance.
+
+    Company news and order announcements carry no guidance sentence, so the
+    newest release is usually the wrong one; a results publication a few weeks
+    back is the right one. Scanning a bounded list is cheaper than guessing.
+    """
+    source = _fallback_source(instrument)
+    if not source:
+        raise VendorNotConfiguredError("no sitemap configured for the release-text fallback")
+    urls = issuer_ir._sitemap_urls(source["sitemap"])
+    entries = issuer_ir.dated_entries(urls, source["url_patterns"], date(2000, 1, 1), date.today())
+    entries = [e for e in entries if "/de/" in e["url"]] or entries
+    # Guidance lives in results publications, not in the newest order news: sort
+    # results-like slugs to the front, newest first inside each group, and scan a
+    # bounded prefix. Without this the October news items crowd out the H1 report.
+    def _rank(entry: dict) -> tuple:
+        slug = entry["url"].rstrip("/").rsplit("/", 1)[-1].lower()
+        return (0 if _RESULTS_SLUG_RE.search(slug) else 1, -date.fromisoformat(entry["date"]).toordinal())
+
+    for entry in sorted(entries, key=_rank)[:limit]:
+        if not issuer_ir._allowed(entry["url"]):
+            continue
+        try:
+            _title, text, _alts = issuer_ir.fetch_article(entry["url"])
+        except VendorUnavailableError:
+            continue
+        found = extract_guidance(text)
+        if found:
+            return found, entry["date"], entry["url"]
+    return {}, "", ""
+
+
 def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
     """Every fact this issuer's configuration can serve, as a plain dict.
 
@@ -512,6 +586,20 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
 
     guidance: dict[str, str] = {}
     guidance_date = ""
+    guidance_source: list[str] = [""]
+    if facts and _fallback_source(instrument):
+        # The facts block states the last completed year's figures; the current
+        # guidance lives in the newest release. Both belong in the prompt — a
+        # prior-year backlog next to a cut guidance range is the whole point.
+        # A missing sitemap or an unreadable release is not a gap here: the
+        # figures above are already the answer.
+        try:
+            guidance, guidance_date, release_url = _guidance_from_releases(instrument)
+            if guidance:
+                guidance_source[0] = release_url
+        except (VendorNotConfiguredError, VendorUnavailableError):
+            guidance = {}
+            guidance_date = ""
     if not facts:
         # No facts endpoint: fall back to the newest release's wording. Coarser,
         # and the block says so, but it keeps every sitemap-configured issuer
@@ -523,7 +611,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         if not guidance:
             facts_error = (
                 "the release text carried no recognisable guidance sentence "
-                "(range/margin/backlog); report the figures as unavailable"
+                "(forward range/margin); report the guidance as unavailable"
             )
 
     quote: dict = {}
@@ -556,6 +644,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         "quote": quote,
         "guidance": guidance,
         "guidance_date": guidance_date,
+        "guidance_source": guidance_source[0],
         "calendar": calendar,
         "calendar_verified": verified,
         "calendar_stale": stale,
