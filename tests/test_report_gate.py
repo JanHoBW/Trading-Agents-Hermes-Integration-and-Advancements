@@ -122,6 +122,43 @@ class TestQualityGate:
         assert _check(verdict, "sections_complete")["passed"] is False
         assert _check(verdict, "coverage_windows_named")["passed"] is False
 
+    def test_a_blocked_discipline_plan_is_a_warning_not_a_failure(self, tmp_path):
+        """A blocked setup is an honest report: the gate flags it, never fails it."""
+        tree = _tree(tmp_path)
+        (tree / "sizing.json").write_text(json.dumps({
+            "schema": "tradingagents.advisory.v1", "verdict": "BLOCKED", "status": "fail",
+            "checks": [{"name": "equity", "passed": False, "blocking": True,
+                        "detail": "not available"}],
+        }), encoding="utf-8")
+        (tree / "discipline.json").write_text(
+            json.dumps({"status": "fail", "verdict": "BLOCKED"}), encoding="utf-8")
+
+        verdict = report_gate.run_quality_gate(tree)
+
+        assert verdict["status"] == "APPROVED"
+        check = _check(verdict, "position_sizing")
+        assert check["passed"] is False
+        assert "blocked by equity" in check["detail"]
+
+    def test_an_executable_plan_passes_the_sizing_check(self, tmp_path):
+        tree = _tree(tmp_path)
+        (tree / "sizing.json").write_text(json.dumps({
+            "schema": "tradingagents.advisory.v1", "verdict": "EXECUTE", "status": "pass",
+            "checks": [],
+        }), encoding="utf-8")
+        (tree / "discipline.json").write_text(
+            json.dumps({"status": "pass", "verdict": "EXECUTE"}), encoding="utf-8")
+
+        verdict = report_gate.run_quality_gate(tree)
+
+        assert _check(verdict, "position_sizing")["passed"] is True
+        assert "verdict EXECUTE" in _check(verdict, "position_sizing")["detail"]
+
+    def test_a_missing_sizing_record_is_a_warning(self, tmp_path):
+        verdict = report_gate.run_quality_gate(_tree(tmp_path))
+        assert verdict["status"] == "APPROVED"
+        assert _check(verdict, "position_sizing")["passed"] is False
+
     def test_gate_never_raises_on_an_unwritable_directory(self, tmp_path):
         tree = _tree(tmp_path)
         (tree / "quality_gate.json").mkdir()  # a directory where the file goes

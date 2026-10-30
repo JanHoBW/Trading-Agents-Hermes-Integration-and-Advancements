@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import tradingagents
+from tradingagents import advisory
 from tradingagents.agents.context import build_instrument_context, resolve_instrument_identity
 from tradingagents.agents.rating import run_rating
 from tradingagents.dataflows import coverage
@@ -287,6 +288,14 @@ class TradingAgentsGraph:
         """
         if save_path is None:
             save_path = self.default_report_path(ticker)
+        # One deterministic plan per run: the same function the risk debate and
+        # the PM saw, now with the final rating and the PM's target.
+        # ``getattr`` on purpose: programmatic callers may drive save_reports on
+        # a lightweight object; without a config the sizing falls back to the
+        # module's default policy instead of failing the save.
+        final_state["advisory"] = advisory.build_from_state(
+            final_state, rating=final_state.get("final_rating"),
+            config=getattr(self, "config", None))
         saved = write_report_tree(final_state, ticker, save_path,
                                   settings=self.run_settings(), html=html)
         # Machine-readable twin of the report's Data Coverage section: the
@@ -297,6 +306,9 @@ class TradingAgentsGraph:
             (report_dir / "data_coverage.json").write_text(
                 json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8"
             )
+        # Machine-readable twin of the report's sizing section. Written before
+        # the gate so the gate can mirror the advisory verdict.
+        advisory.write_artifacts(report_dir, final_state["advisory"])
         # The gate reads exactly what was written (report text, decision, coverage
         # record) and stores its verdict next to the report. It never raises: a
         # finished run must not die because its own quality check is unhappy.

@@ -107,6 +107,22 @@ def _rating(decision: str) -> str | None:
     return found[0] if len(found) == 1 else None
 
 
+def _sizing(report_dir: Path) -> tuple[dict | None, dict | None]:
+    """The run's deterministic sizing and discipline records, when written."""
+    out = []
+    for name in ("sizing.json", "discipline.json"):
+        path = report_dir / name
+        if not path.is_file():
+            out.append(None)
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        out.append(data if isinstance(data, dict) else None)
+    return out[0], out[1]
+
+
 def run_quality_gate(report_dir) -> dict:
     """Check a finished run's report tree; write and return the verdict."""
     report_dir = Path(report_dir)
@@ -144,6 +160,20 @@ def run_quality_gate(report_dir) -> dict:
     check("coverage_recorded", bool(methods),
           f"{len(methods)} vendor call(s) recorded" if methods else
           "data_coverage.json missing or empty — the run's data provenance was not written")
+
+    # The deterministic sizing record: a blocked plan describes an honest report
+    # of an untradeable setup, so it is surfaced, never a reason to fail the run.
+    sizing, discipline = _sizing(report_dir)
+    if sizing is None:
+        check("position_sizing", False,
+              "sizing.json missing — no deterministic plan was recorded", blocking=False)
+    else:
+        failed_sizing = [c.get("name") for c in sizing.get("checks") or []
+                         if c.get("blocking") and not c.get("passed")]
+        check("position_sizing", (discipline or {}).get("status") != "fail",
+              f"verdict {sizing.get('verdict')}, status {sizing.get('status')}"
+              + (f"; blocked by {', '.join(failed_sizing)}" if failed_sizing else ""),
+              blocking=False)
 
     # Warnings: worth surfacing to the reader, not worth failing the run.
     missing = [label for label, rel in EXPECTED_SECTIONS

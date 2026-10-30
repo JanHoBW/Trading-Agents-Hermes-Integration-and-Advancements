@@ -9,6 +9,7 @@ run produces the same on-disk report tree a CLI run does.
 from datetime import date, datetime
 from pathlib import Path
 
+from tradingagents import advisory
 from tradingagents.agents.rating import run_rating
 from tradingagents.dataflows import coverage
 
@@ -109,6 +110,15 @@ def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str
                 written.append((agent, filename, value))
         if written:
             parts.append((heading, folder, written))
+    # The deterministic sizing belongs to the decision, so it follows the PM
+    # decision and precedes the coverage appendix. Numbering adapts: a run that
+    # somehow has no plan keeps the coverage section as VI instead of leaving a
+    # hole in the document.
+    plan = final_state.get("advisory")
+    if plan:
+        parts.append(("VI. Position Sizing & Discipline", "5_portfolio",
+                      [("Position Sizing & Discipline", "sizing.md",
+                        advisory.render_markdown(plan))]))
     # Data coverage last: the gaps belong next to the decision, but after the
     # analysis they qualify. Only present when the routing layer recorded calls.
     coverage_text = coverage.render_markdown(
@@ -117,7 +127,8 @@ def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str
         _window_lines(final_state.get("trade_date")),
     )
     if coverage_text:
-        parts.append(("VI. Data Coverage", "6_coverage",
+        heading = "VII. Data Coverage" if plan else "VI. Data Coverage"
+        parts.append((heading, "6_coverage",
                       [("Data Coverage", "coverage.md", coverage_text)]))
     return parts
 
