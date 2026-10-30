@@ -139,6 +139,8 @@ modelled, with the data it needs and a stated limit where the data runs out.
   same mapping, so the decision prompt says "Current position in EUDF.DE" and
   the position cap nets the real 84.6 % holding instead of sizing a fresh
   (or short) position beside it. Derivatives keep their contractual underlying.
+  `_held_units()` follows the same mapping, so a `Sell` on the held fund is an
+  **exit** of 8 172 units, not a new 15 % short.
 - **Before the run.** The wrapper resolves instruments (including baskets) and
   FX for the book in `refresh_book()`, used by `run` and `doctor`; the graph
   reads only the caches. `doctor` adds `portfolio_fx`.
@@ -151,7 +153,7 @@ return `NO_TRADE` because the position cap is already consumed.
 
 Tests: `tests/test_fx.py` (8), `tests/test_options.py` (13), plus additions to
 the instrument, advisory, portfolio and report suites; layering test enforces
-that `yfinance` stays in the data layer. Full suite 1827 passed, 1 skipped.
+that `yfinance` stays in the data layer. Full suite 1828 passed, 1 skipped.
 
 ## [Fork v1.0.14] — 2026-10-30
 

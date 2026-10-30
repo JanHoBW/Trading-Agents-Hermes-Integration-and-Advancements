@@ -83,11 +83,20 @@ def _floor(value: float) -> int:
     return max(0, int(math.floor(value + 1e-9)))
 
 
-def _held_units(account: Mapping[str, Any], ticker: str) -> float:
-    """Signed units already held in ``ticker``; 0 when unknown."""
+def _held_units(account: Mapping[str, Any], ticker: str,
+                instruments: Mapping[str, Mapping[str, Any]] | None = None) -> float:
+    """Signed units already held in ``ticker``; 0 when unknown.
+
+    The line may be booked under a depot WKN, with ``analysis_ticker`` naming
+    the analyzed symbol, or as a fund whose tradable symbol lives on the
+    instrument record. All three are the same holding.
+    """
     symbol = (ticker or "").strip().upper()
     for position in account.get("positions") or []:
-        if str(position.get("ticker", "")).strip().upper() == symbol:
+        booked = str(position.get("ticker", "")).strip().upper()
+        alias = str(position.get("analysis_ticker") or "").strip().upper()
+        fund = str(((instruments or {}).get(booked) or {}).get("fund_symbol") or "").strip().upper()
+        if symbol and symbol in {booked, alias, fund}:
             return _num(position.get("quantity")) or 0.0
     return 0.0
 
@@ -383,7 +392,7 @@ def build_advisory(
     # "Sell" while holding a long closes it, and closing spends no risk budget.
     # A partial trim is the narrative's business; the plan states the full exit
     # it can prove, so the count is never an interpretation of prose.
-    held = _held_units(account, ticker)
+    held = _held_units(account, ticker, instruments)
     is_exit = ((direction == "long" and held < 0) or (direction == "short" and held > 0))
     checks: list[dict] = []
     missing: list[str] = []

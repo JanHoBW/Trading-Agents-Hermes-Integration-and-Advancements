@@ -449,6 +449,20 @@ def test_a_fund_is_netted_under_its_tradable_symbol():
 
 
 @pytest.mark.unit
+def test_a_sell_on_a_fund_booked_under_its_wkn_is_an_exit():
+    # "Sell" while holding the fund closes it; it must not be sized as a short.
+    book = {**ACCOUNT, "equity": 100_000.0, "positions": [
+        {"ticker": "A40Y9K", "quantity": 400.0, "market_value": 40_000.0}]}
+    fund = {"A40Y9K": {"kind": "etf", "fund_symbol": "EUDF.DE"}}
+    p = plan(ticker="EUDF.DE", account=book, instruments=fund, rating="Sell",
+             proposal={"action": "Sell", "entry_price": 100.0})
+    assert p["position"]["kind"] == "exit"
+    assert p["position"]["shares"] == 400
+    assert _check(p, "exit_plan")["passed"] is True
+    assert p["verdict"] == "EXECUTE"
+
+
+@pytest.mark.unit
 def test_a_venue_override_maps_an_adr_line_to_the_analysis_symbol():
     book = {**ACCOUNT, "equity": 100_000.0, "positions": [
         {"ticker": "A420WD", "quantity": 133.0, "market_value": 17_035.0,
