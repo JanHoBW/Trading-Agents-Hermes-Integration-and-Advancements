@@ -151,6 +151,37 @@ def test_reward_risk_warns_but_does_not_block():
 
 
 @pytest.mark.unit
+def test_a_sell_against_a_held_long_is_an_exit_not_a_new_short():
+    """Selling what the caller holds closes the position; it does not open a short."""
+    p = plan(rating="Sell", proposal={"action": "Sell", "entry_price": 100.0},
+             account={**ACCOUNT, "positions": [{"ticker": "X.DE", "quantity": 10}]})
+    assert p["position"]["kind"] == "exit"
+    assert p["position"]["shares"] == 10
+    assert p["position"]["risk"] == 0.0
+    assert p["position"]["binding_constraint"] == "by_holding"
+    assert p["verdict"] == "EXECUTE"
+    # Closing needs no stop, so no stop check is raised against the exit.
+    assert not any(c["name"] == "stop_loss" for c in p["checks"])
+
+
+@pytest.mark.unit
+def test_a_buy_against_a_held_short_covers_it():
+    p = plan(account={**ACCOUNT, "positions": [{"ticker": "X.DE", "quantity": -7}]})
+    assert p["position"]["kind"] == "exit"
+    assert p["position"]["shares"] == 7
+
+
+@pytest.mark.unit
+def test_an_exit_needs_no_equity():
+    """A risk budget sizes new exposure; it does not gate closing one."""
+    p = plan(rating="Sell", proposal={"action": "Sell", "entry_price": 100.0},
+             account={"positions": [{"ticker": "X.DE", "quantity": 4}]})
+    assert p["verdict"] == "EXECUTE"
+    assert p["position"]["shares"] == 4
+    assert "equity" not in p["missing"]
+
+
+@pytest.mark.unit
 def test_liquidity_participation_warns():
     p = plan(levels={**LEVELS, "adv_value": 50_000.0})
     assert _check(p, "liquidity")["passed"] is False
@@ -202,6 +233,15 @@ def test_context_block_says_no_trade_instead_of_none_units():
     # A direct caller without a rating but with levels: no side to size.
     unsided = advisory.render_context(plan(rating=None))
     assert "direction could not be established" in unsided
+
+
+@pytest.mark.unit
+def test_context_block_describes_an_exit_as_a_close():
+    text = advisory.render_context(
+        plan(rating="Sell", proposal={"action": "Sell", "entry_price": 100.0},
+             account={**ACCOUNT, "positions": [{"ticker": "X.DE", "quantity": 10}]}))
+    assert "Exit: 10 units" in text
+    assert "no stop is required" in text
 
 
 @pytest.mark.unit

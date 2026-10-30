@@ -147,6 +147,12 @@ def build_advisory(
     account = dict(account or {})
     levels = dict(levels or {})
     direction = direction_of(rating)
+    # A trade against the caller's existing side is an exit, not a new position:
+    # "Sell" while holding a long closes it, and closing spends no risk budget.
+    # A partial trim is the narrative's business; the plan states the full exit
+    # it can prove, so the count is never an interpretation of prose.
+    held = _held_units(account, ticker)
+    is_exit = ((direction == "long" and held < 0) or (direction == "short" and held > 0))
     checks: list[dict] = []
     missing: list[str] = []
 
@@ -166,7 +172,10 @@ def build_advisory(
     else:
         check("portfolio_context", True, "book provided")
         if equity is None:
-            miss("equity")
+            # Closing a position needs no risk budget, so an exit is not blocked
+            # by a missing equity; only a new position is.
+            if not is_exit:
+                miss("equity")
         else:
             currency = str(account.get("currency") or "").strip()
             check("equity", True, f"{equity:,.2f}{' ' + currency if currency else ''}")
@@ -185,12 +194,14 @@ def build_advisory(
     stop = _positive(proposal.get("stop_loss"))
     stop_source = "trader"
     atr = _positive(levels.get("atr"))
-    if stop is None and atr is not None and entry is not None and direction in {"long", "short"}:
+    if (stop is None and not is_exit and atr is not None and entry is not None
+            and direction in {"long", "short"}):
         offset = float(policy["stop_atr_multiple"]) * atr
         stop = entry - offset if direction == "long" else entry + offset
         stop_source = "atr_derived"
     if stop is None:
-        miss("stop_loss")
+        if not is_exit:
+            miss("stop_loss")
     else:
         check("stop_loss", True, f"{stop:,.4f} ({stop_source})")
         if stop_source == "atr_derived":
@@ -201,7 +212,10 @@ def build_advisory(
     # --- side and distance ------------------------------------------------
     risk_per_share = stop_pct = atr_multiple = None
     side_ok = True
-    if entry is not None and stop is not None:
+    if is_exit:
+        check("exit_plan", True,
+              f"closing {_floor(abs(held))} unit(s) of the held position", blocking=False)
+    elif entry is not None and stop is not None:
         risk_per_share = abs(entry - stop)
         stop_pct = risk_per_share / entry * 100
         if direction in {"long", "short"}:
@@ -227,17 +241,31 @@ def build_advisory(
     max_pos_pct = _positive(account.get("max_position_pct")) or float(policy["max_position_pct"])
     caps: dict[str, int | None] = {}
     position: dict[str, Any] = {}
-    if equity and entry and risk_per_share and side_ok and direction in {"long", "short"}:
+    if is_exit and entry:
+        units = _floor(abs(held))
+        caps["by_holding"] = units
+        position = {
+            "kind": "exit",
+            "shares": units,
+            "notional": round(units * entry, 2),
+            "risk": 0.0,
+            "position_pct": round(units * entry / equity * 100, 2) if equity else None,
+            "risk_pct": 0.0,
+            "binding_constraint": "by_holding",
+            "currency": account.get("currency"),
+            "executable": False,
+        }
+    elif equity and entry and risk_per_share and side_ok and direction in {"long", "short"}:
         budget = equity * risk_pct / 100
         caps["by_risk"] = _floor(budget / risk_per_share)
         total_units = _floor(equity * max_pos_pct / 100 / entry)
-        held = _held_units(account, ticker)
         held_same_side = max(0.0, held) if direction == "long" else max(0.0, -held)
         caps["by_position"] = max(0, total_units - _floor(held_same_side))
         caps["by_cash"] = _floor(cash / entry) if (cash is not None and direction == "long") else None
         binding = {name: cap for name, cap in caps.items() if cap is not None}
         shares = min(binding.values()) if binding else 0
         position = {
+            "kind": "entry",
             "shares": shares,
             "notional": round(shares * entry, 2),
             "risk": round(shares * risk_per_share, 2),
@@ -251,7 +279,7 @@ def build_advisory(
     # --- target / reward-risk --------------------------------------------
     target = _positive(target)
     reward_risk = None
-    if entry is not None and target is not None and risk_per_share:
+    if not is_exit and entry is not None and target is not None and risk_per_share:
         if direction == "long" and target > entry:
             reward_risk = (target - entry) / risk_per_share
         elif direction == "short" and target < entry:
@@ -326,6 +354,20 @@ def _fmt(value, digits: int = 2, suffix: str = "") -> str:
     return "not available" if number is None else f"{number:,.{digits}f}{suffix}"
 
 
+def _position_cell(plan: Mapping[str, Any]) -> str:
+    """One line for the report table: an entry names its risk, an exit its proceeds."""
+    position = plan.get("position") or {}
+    if not position:
+        return "not available"
+    if position.get("kind") == "exit":
+        return (f"exit {position.get('shares')} units (proceeds "
+                f"{_fmt(position.get('notional'), 2)}, "
+                f"{_fmt(position.get('position_pct'), 2, ' % of equity')})")
+    return (f"{position.get('shares')} units, {_fmt(position.get('notional'), 2)} "
+            f"({_fmt(position.get('position_pct'), 2, ' % of equity')}), "
+            f"risk {_fmt(position.get('risk'), 2)} on the stop")
+
+
 def render_markdown(plan: Mapping[str, Any]) -> str:
     """The report section: the plan, then every check with its result."""
     lines = [
@@ -348,12 +390,7 @@ def render_markdown(plan: Mapping[str, Any]) -> str:
         f"| Target / reward-risk | {_fmt((plan.get('levels') or {}).get('target'), 4)} / "
         f"{_fmt((plan.get('levels') or {}).get('reward_risk'), 2)} |",
         f"| Equity | {_fmt((plan.get('account') or {}).get('equity'), 2)} |",
-        "| Position | "
-        + (f"{plan['position'].get('shares')} units, "
-           f"{_fmt(plan['position'].get('notional'), 2)} "
-           f"({_fmt(plan['position'].get('position_pct'), 2, ' % of equity')}), "
-           f"risk {_fmt(plan['position'].get('risk'), 2)} on the stop"
-           if plan.get('position') else "not available") + " |",
+        f"| Position | {_position_cell(plan)} |",
         f"| Binding constraint | {(plan.get('position') or {}).get('binding_constraint') or 'not available'} |",
     ]
     missing = plan.get("missing") or []
@@ -391,6 +428,15 @@ def render_context(plan: Mapping[str, Any]) -> str:
     levels = plan.get("levels") or {}
     position = plan.get("position") or {}
     account = plan.get("account") or {}
+    if position.get("kind") == "exit":
+        return "\n".join([
+            "Deterministic sizing of the decision (computed in code, not estimated):",
+            f"- Exit: {position.get('shares')} units of the held position at "
+            f"{_fmt(levels.get('entry'), 4)} (proceeds {_fmt(position.get('notional'))}, "
+            f"{_fmt(position.get('position_pct'), 2, ' % of equity')})",
+            "- This closes an existing position: no risk budget is spent and no stop is required.",
+            "Use these figures verbatim; do not propose a different share count.",
+        ])
     risk_pct = account.get("risk_per_trade_pct") or (plan.get("policy") or {}).get("risk_per_trade_pct")
     return "\n".join([
         "Deterministic sizing of the Trader's proposal (computed in code, not estimated):",

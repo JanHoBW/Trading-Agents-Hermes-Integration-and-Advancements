@@ -30,6 +30,19 @@ notional = shares * entry
 A short uses the same risk budget; cash does not cap it (the fork has no margin
 model). The binding constraint is named in `position.binding_constraint`.
 
+### Exits are not entries
+
+A rating that points against the caller's existing side is a **close**, not a new
+position: `Sell`/`Underweight` while holding a long, or `Buy`/`Overweight` while
+holding a short. The plan then reports `position.kind = "exit"`, `shares` = the
+units held on that side, `binding_constraint = "by_holding"` and `risk = 0.0` —
+closing spends no risk budget and needs no stop, so an exit is not blocked by a
+missing stop or a missing `equity`. Proceeds are `shares × entry`.
+
+A partial trim ("sell 6 of 10") is the narrative's business; the plan states the
+full exit it can prove rather than interpreting prose. With no position on the
+other side, `Sell` sizes a new short as an entry.
+
 ## Inputs, in order of precedence
 
 | Input | Source | Missing means |

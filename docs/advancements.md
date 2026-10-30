@@ -113,6 +113,10 @@ and the risk policy. Nothing is parsed out of prose and nothing is estimated.
   cap (`equity × max_position_pct / 100 / entry`, minus units already held on
   the same side) and affordable cash (longs only). Result:
   `sizing.json` with `levels`, `caps`, `position` and the binding constraint.
+- **Exits.** A rating against the caller's side (`Sell` while holding a long,
+  `Buy` while holding a short) is planned as `kind: exit`: the held units,
+  `risk = 0`, no stop required, no equity required — closing spends no risk
+  budget. A partial trim stays narrative; the plan states the full exit.
 - **Discipline gate.** Blocking checks: book context, `equity`, `entry_price`,
   `stop_loss` (derived from `2 × ATR` only when the Trader gave none, and then
   labelled `stop_source: atr_derived`), stop on the correct side of entry, and a
