@@ -182,7 +182,7 @@ def test_guidance_scan_prefers_results_publications_over_current_news(monkeypatc
     monkeypatch.setattr(issuer_facts.issuer_ir, "_allowed", lambda url: True)
     monkeypatch.setattr(issuer_facts.issuer_ir, "fetch_article",
                         lambda url: ("t", "Der Konzern erwartet eine Marge von rund 19 %.", []))
-    guidance, when, _url = issuer_facts._guidance_from_releases(instrument, limit=2)
+    guidance, when, _url, _text = issuer_facts._guidance_from_releases(instrument, limit=2)
     assert when == "2026-08-06"
     assert guidance["guidance_margin"] == "19 %"
 
@@ -421,6 +421,59 @@ def test_unreadable_facts_endpoint_is_a_gap_not_a_crash(monkeypatch, instrument)
                         mock.Mock(side_effect=VendorUnavailableError("boom")))
     with pytest.raises(VendorUnavailableError):
         issuer_facts.collect_ir_facts("RHM.DE")
+
+
+# ---------------------------------------------------------------------------
+# Release figures (quarterly/H1 margins) stay separate from the annual block
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_release_prose_facts_are_kept_out_of_the_annual_block(monkeypatch, instrument):
+    """A Q2 margin must not appear under a 31.12. reference date.
+
+    The annual block has one reference date and one perimeter; the Q2 margin comes
+    from a release. Mixing them is what made the 27.10. run compare a vendor Q2
+    margin against FY guidance on two different definitions.
+    """
+    instrument["ir"] = {"enabled": True, "sitemap": "https://example.com/sitemap.xml",
+                        "url_patterns": ["/news/"]}
+    instrument["ir_facts"] = _facts_block(prose_facts=[
+        {"label": "Operative Marge Q2 2026", "regex": r"sogar auf (?P<v>[\d,]+)%", "suffix": " %"},
+    ])
+    monkeypatch.setattr(issuer_facts, "load_instrument", lambda t, config=None: instrument)
+    monkeypatch.setattr(issuer_facts, "_fetch_json",
+                        lambda url: (SNIPPET, json.dumps(SNIPPET)) if url.endswith("kennzahlen")
+                        else (QUOTE, json.dumps(QUOTE)))
+    monkeypatch.setattr(issuer_facts, "_guidance_from_releases",
+                        lambda inst, limit=6: ({"guidance_range": "13,7 bis 14,2 Mrd"}, "2026-08-06",
+                                               "https://example.com/release",
+                                               "Die Marge stieg sogar auf 17,1% im Quartal."))
+    facts = issuer_facts.collect_ir_facts("RHM.DE")
+    assert "Operative Marge Q2 2026" not in facts["facts"]
+    assert facts["release_facts"] == {"Operative Marge Q2 2026": "17,1 %"}
+    assert facts["release_facts_date"] == "2026-08-06"
+    assert facts["reference_date"] == "31.12.2025"
+
+
+@pytest.mark.unit
+def test_render_puts_release_figures_in_their_own_section(monkeypatch, instrument):
+    block = issuer_facts.render_ir_facts({
+        "ticker": "RHM.DE", "issuer": "Rheinmetall AG", "reference_date": "31.12.2025",
+        "facts": {"Umsatz": "9,9 Mrd EUR"},
+        "release_facts": {"Operative Marge Q2 2026": "17,1 %"},
+        "release_facts_date": "2026-08-06",
+        "release_facts_source": "https://example.com/release",
+    })
+    assert "Figures from the issuer release dated 2026-08-06" in block
+    assert "not the annual block above" in block
+    assert "  - Operative Marge Q2 2026: 17,1 %" in block
+
+
+@pytest.mark.unit
+def test_delta_reports_release_figure_changes():
+    old = {"release_facts": {"Operative Marge Q2 2026": "17,1 %"}}
+    new = {"release_facts": {"Operative Marge Q2 2026": "18,0 %"}}
+    assert "GEAENDERT (Release): Operative Marge Q2 2026: 17,1 % -> 18,0 %" in issuer_facts.diff_facts(old, new)
 
 
 # ---------------------------------------------------------------------------

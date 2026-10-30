@@ -386,6 +386,18 @@ def diff_facts(old: dict | None, new: dict) -> list[str]:
         else:
             changes.append(f"GEAENDERT: {label}: {before} -> {after}")
 
+    old_rf, new_rf = old.get("release_facts") or {}, new.get("release_facts") or {}
+    for label in sorted(set(old_rf) | set(new_rf)):
+        before, after = old_rf.get(label), new_rf.get(label)
+        if before == after:
+            continue
+        if before is None:
+            changes.append(f"NEU (Release): {label} = {after}")
+        elif after is None:
+            changes.append(f"ENTFALLEN (Release): {label} (war {before})")
+        else:
+            changes.append(f"GEAENDERT (Release): {label}: {before} -> {after}")
+
     old_g, new_g = old.get("guidance") or {}, new.get("guidance") or {}
     for key in ("guidance_range", "guidance_margin"):
         before, after = old_g.get(key), new_g.get(key)
@@ -472,6 +484,17 @@ def render_ir_facts(facts: dict, *, delta: list[str] | None = None) -> str:
         lines.append(
             "  - Extract by pattern match on prose; quote the wording, not just the numbers."
         )
+
+    release_figures = facts.get("release_facts") or {}
+    if release_figures:
+        lines.append("")
+        lines.append(
+            f"- Figures from the issuer release dated {facts.get('release_facts_date') or 'n/a'}"
+            + (f" ({facts['release_facts_source']})" if facts.get("release_facts_source") else "")
+            + " — same perimeter as that release, not the annual block above:"
+        )
+        for label, value in release_figures.items():
+            lines.append(f"  - {label}: {value}")
 
     latest = facts.get("latest_publications") or []
     if latest:
@@ -655,8 +678,8 @@ def _latest_release_text(instrument: dict) -> tuple[str, str, str]:
     raise VendorUnavailableError("no readable issuer release found for the guidance fallback")
 
 
-def _guidance_from_releases(instrument: dict, limit: int = 6) -> tuple[dict, str, str]:
-    """``(guidance, date, url)`` from the newest release that states guidance.
+def _guidance_from_releases(instrument: dict, limit: int = 6) -> tuple[dict, str, str, str]:
+    """``(guidance, date, url, text)`` from the newest release that states guidance.
 
     Company news and order announcements carry no guidance sentence, so the
     newest release is usually the wrong one; a results publication a few weeks
@@ -684,8 +707,8 @@ def _guidance_from_releases(instrument: dict, limit: int = 6) -> tuple[dict, str
             continue
         found = extract_guidance(text)
         if found:
-            return found, entry["date"], entry["url"]
-    return {}, "", ""
+            return found, entry["date"], entry["url"], text
+    return {}, "", "", ""
 
 
 def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
@@ -717,6 +740,14 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
     guidance: dict[str, str] = {}
     guidance_date = ""
     guidance_source: list[str] = [""]
+    # Figures that the issuer states only in release prose (quarterly/H1 margins)
+    # must NOT be mixed into the facts block: that block carries one reference
+    # date (the last completed year) and one perimeter. Mixing a Q2 margin into a
+    # FY table is exactly the error this vendor exists to prevent, so the release
+    # figures travel as their own section with the release's own date.
+    release_facts: dict[str, str] = {}
+    release_facts_date = ""
+    release_facts_source = ""
     latest: list[dict] = []
 
     if not facts and cfg["release_index"]:
@@ -745,16 +776,22 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
                 f"results entry ({target['date']}); report the figures as unavailable"
             )
 
-    if facts and _fallback_source(instrument) and not guidance:
+    if facts and not cfg["release_index"] and _fallback_source(instrument):
         # The facts block states the last completed year's figures; the current
         # guidance lives in the newest release. Both belong in the prompt — a
         # prior-year backlog next to a cut guidance range is the whole point.
         # A missing sitemap or an unreadable release is not a gap here: the
         # figures above are already the answer.
         try:
-            guidance, guidance_date, release_url = _guidance_from_releases(instrument)
-            if guidance:
+            found, found_date, release_url, release_text = _guidance_from_releases(instrument)
+            if found and not guidance:
+                guidance, guidance_date = found, found_date
                 guidance_source[0] = release_url
+            if cfg["prose_facts"] and release_text:
+                release_facts = apply_prose_facts(release_text, cfg["prose_facts"])
+                if release_facts:
+                    release_facts_date = found_date or guidance_date
+                    release_facts_source = release_url
         except (VendorNotConfiguredError, VendorUnavailableError):
             guidance = {}
             guidance_date = ""
@@ -806,6 +843,9 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         "calendar": calendar,
         "calendar_verified": verified,
         "calendar_stale": stale,
+        "release_facts": release_facts,
+        "release_facts_date": release_facts_date,
+        "release_facts_source": release_facts_source,
         "facts_error": facts_error,
         "latest_publications": latest,
     }

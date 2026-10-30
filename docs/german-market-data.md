@@ -136,6 +136,7 @@ Behaviour worth knowing:
 - **Calendar is deliberately static.** An IR calendar is HTML/JS; guessing at it is
   worse than a dated statement someone verified. `calendar_verified` older than
   120 days renders as `STALE, re-verify`, and `doctor` reports it as degraded.
+- **Release figures stay separate from the annual block.** `prose_facts` also runs when a `facts_json` exists: the figures are rendered in their own section, dated to the release that states them, precisely so a quarterly margin is never shown under a year-end reference date. RHM.DE carries FY 18,5 % (annual block), H1 2026 15,0 % / Q2 2026 17,1 % (release section) and the 19 % guidance — the three different perimeters are now visible instead of being averaged into one misleading number.
 - **Two fallback shapes for issuers without a facts endpoint** (verified on
   Siemens Energy ENR.DE, 2026-10-29):
   * `release_index` — the release URLs carry **no date** (so a sitemap cannot
