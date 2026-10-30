@@ -142,7 +142,7 @@ class UiProvenanceTests(unittest.TestCase):
 
 
 class DoctorTests(unittest.TestCase):
-    def _doctor(self, ticker, health=None):
+    def _doctor(self, ticker, health=None, portfolio=None):
         repo = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
         (repo / "cli").mkdir()
@@ -152,7 +152,7 @@ class DoctorTests(unittest.TestCase):
         (repo / "registry.json").write_text("{}", encoding="utf-8")
         (repo / "memory").mkdir()
         args = Namespace(ticker=ticker, date="2026-10-21", llm="lmstudio",
-                         portfolio=None, supplement=None)
+                         portfolio=portfolio, supplement=None)
         buf = io.StringIO()
         with patch.object(run_analysis, "find_install_root", return_value=repo), \
                 patch.object(run_analysis, "_repo_health", return_value=health or {
@@ -176,6 +176,27 @@ class DoctorTests(unittest.TestCase):
         names = {c["check"] for c in payload["checks"]}
         self.assertIn("benchmark", names)
         self.assertIn("memory_log", names)
+
+    def test_doctor_reports_the_book_equity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book = Path(tmp) / "book.json"
+            book.write_text(json.dumps({"equity": 25000, "cash": 5000, "currency": "EUR"}),
+                            encoding="utf-8")
+            code, payload = self._doctor("RHM.DE", portfolio=str(book))
+        details = {c["check"]: c for c in payload["checks"]}
+        self.assertEqual(details["portfolio_equity"]["status"], "ok")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(code, 0)
+
+    def test_doctor_degrades_on_a_book_without_equity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book = Path(tmp) / "book.json"
+            book.write_text(json.dumps({"cash": 5000, "currency": "EUR"}), encoding="utf-8")
+            code, payload = self._doctor("RHM.DE", portfolio=str(book))
+        details = {c["check"]: c for c in payload["checks"]}
+        self.assertEqual(details["portfolio_equity"]["status"], "degraded")
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(code, 3)
 
     def test_doctor_blocks_on_unknown_ticker(self):
         code, payload = self._doctor("NOPE.XYZ")

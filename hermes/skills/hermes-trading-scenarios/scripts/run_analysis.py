@@ -1042,7 +1042,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             # Deterministic sizing needs equity; without it the plan is BLOCKED,
             # which an unattended chain should know before spending hours.
             try:
-                book = json.loads(Path(args.portfolio).read_text(encoding="utf-8"))
+                book = json.loads(Path(args.portfolio).expanduser().read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 book = {}
             equity = book.get("equity") if isinstance(book, dict) else None
