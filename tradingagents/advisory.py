@@ -685,11 +685,16 @@ def render_markdown(plan: Mapping[str, Any]) -> str:
         for name, group in exposure.get("by_underlying", {}).items():
             keys = ", ".join(group.get("keys") or [])
             currency = group.get("currency") or ""
-            status = "ok"
+            flags: list[str] = []
+            if group.get("lookthrough"):
+                flags.append("look-through via " + ", ".join(group.get("via") or []))
             if group.get("unknown"):
-                status = "unknown: " + ", ".join(group["unknown"])
+                flags.append("unknown: " + ", ".join(group["unknown"]))
+            if group.get("fx"):
+                flags.append("no FX rate: " + ", ".join(group["fx"]))
             if group.get("over_cap"):
-                status += " (over cap)"
+                flags.append("over cap")
+            status = ", ".join(flags) or "ok"
             lines.append(
                 f"| {name} | {keys} | {_fmt(group.get('net'))} {currency} | "
                 f"{_fmt(group.get('gross'))} | {_fmt(group.get('pct_equity'), 2)} | {status} |")
