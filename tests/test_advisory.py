@@ -193,6 +193,15 @@ def test_context_block_forbids_an_invented_share_count_when_blocked():
 
 
 @pytest.mark.unit
+def test_context_block_says_no_trade_instead_of_none_units():
+    hold = advisory.render_context(plan(rating="Hold"))
+    assert "no trade" in hold.lower() and "None units" not in hold
+    # A cap that reduces the size to zero is named, not rendered as "None".
+    tiny = advisory.render_context(plan(account={**ACCOUNT, "cash": 50.0}))
+    assert "no executable size" in tiny and "None units" not in tiny
+
+
+@pytest.mark.unit
 def test_context_block_carries_the_numbers():
     text = advisory.render_context(plan(target=120.0))
     assert "25 units" in text and "1.00 %" in text and "2.00x ATR" in text

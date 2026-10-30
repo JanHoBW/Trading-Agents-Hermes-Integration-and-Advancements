@@ -146,7 +146,7 @@ in-flight checkpoints deliberately do not resume across this change.
 Tests: `tests/test_advisory.py` (21), `tests/test_advisory_report.py` (3),
 `tests/test_sizing_config.py` (3), plus additions to the portfolio, structured
 agent, report-gate and risk-quantification suites; wrapper
-`tests/test_run_analysis_advisory.py`. Full suite 1746 passed, 1 skipped.
+`tests/test_run_analysis_advisory.py`. Full suite 1759 passed, 1 skipped.
 
 ## [Fork v1.0.12] — 2026-10-21
 

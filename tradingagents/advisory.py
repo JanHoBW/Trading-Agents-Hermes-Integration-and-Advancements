@@ -377,6 +377,14 @@ def render_context(plan: Mapping[str, Any]) -> str:
         reasons = "; ".join(c["name"] for c in plan["checks"] if c["blocking"] and not c["passed"])
         return (f"Deterministic sizing is blocked ({reasons or 'missing inputs'}). "
                 "Do not invent a share count; say that a size cannot be derived and why.")
+    if plan.get("verdict") == "NO_TRADE":
+        if plan.get("direction") == "none":
+            return ("Deterministic sizing: no trade — the rating is Hold, so there is no "
+                    "position to size. Do not propose a share count.")
+        position = plan.get("position") or {}
+        return (f"Deterministic sizing: no executable size (the "
+                f"{position.get('binding_constraint') or 'position caps'} limited it to 0 units). "
+                "Do not propose a share count; say why no size is available.")
     levels = plan.get("levels") or {}
     position = plan.get("position") or {}
     account = plan.get("account") or {}
