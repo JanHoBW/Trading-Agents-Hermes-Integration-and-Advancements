@@ -94,8 +94,59 @@ log format, CLI subcommand).
 | Realized P&L | `portfolio` config + `memory/realized.py` CSV reader | none (`path=None` = paper mode) |
 | News supplement | `news_supplement` vendor + `TRADINGAGENTS_NEWS_SUPPLEMENT` | none (opt-in) |
 | One-call wrapper | `run_analysis.py` in `hermes/skills/hermes-trading-scenarios` | none (process level) |
+| Deterministic sizing | `advisory.py` + typed Trader/PM fields in the run state | none (additive state keys) |
 
 ---
+
+## [Fork v1.0.13] — 2026-10-30
+
+### Added — deterministic position sizing and a pre-trade discipline gate
+
+The report named a position size the model had guessed. Every figure in the new
+`tradingagents/advisory.py` is arithmetic over inputs that already exist: the
+Trader's **structured** proposal (`action`, `entry_price`, `stop_loss`), the
+caller's book (`PortfolioContext`), verified close/ATR/ADV at the analysis date,
+and the risk policy. Nothing is parsed out of prose and nothing is estimated.
+
+- **Sizing.** `risk_per_share = |entry - stop|`; `shares` is the smallest of
+  risk budget (`equity × risk_per_trade_pct / 100 / risk_per_share`), position
+  cap (`equity × max_position_pct / 100 / entry`, minus units already held on
+  the same side) and affordable cash (longs only). Result:
+  `sizing.json` with `levels`, `caps`, `position` and the binding constraint.
+- **Discipline gate.** Blocking checks: book context, `equity`, `entry_price`,
+  `stop_loss` (derived from `2 × ATR` only when the Trader gave none, and then
+  labelled `stop_source: atr_derived`), stop on the correct side of entry, and a
+  minimum stop distance. Warnings: reward/risk against the PM's typed target,
+  ATR band, liquidity (share of 20-day traded value). Verdicts: `EXECUTE`,
+  `NO_TRADE`, `BLOCKED`, `NOT_APPLICABLE` — a blocked plan blocks the *setup*,
+  never the report; `quality_gate.json` mirrors it as a warning (`position_sizing`).
+- **Same numbers everywhere.** The Trader node keeps its typed proposal and the
+  verified levels in the run state, so the risk debate and the Portfolio Manager
+  receive the plan as a prompt block ("Use these figures verbatim…"). Post-run
+  `save_reports` recomputes it with the final rating and the PM's target.
+- **Report.** Section *VI. Position Sizing & Discipline* under
+  `reports/5_portfolio/sizing.md`; *Data Coverage* moves to VII when the section
+  exists (VI stays for a tree written without a plan). `sizing.json` and
+  `discipline.json` sit next to `quality_gate.json`.
+- **Account fields.** `PortfolioContext` gains optional `equity`,
+  `risk_per_trade_pct` and `max_position_pct` (per-account values win over the
+  config). Policy defaults are flat, env-overridable keys:
+  `TRADINGAGENTS_RISK_PER_TRADE_PCT` (1.0), `TRADINGAGENTS_MAX_POSITION_PCT` (15),
+  `TRADINGAGENTS_MIN_REWARD_RISK` (1.5), `TRADINGAGENTS_STOP_ATR_MULTIPLE` (2.0),
+  `TRADINGAGENTS_MIN_STOP_PCT` (0.2), `TRADINGAGENTS_MAX_ADV_PCT` (1.0).
+- **Wrapper 2.6.0.** The stdout/provenance JSON carries `advisory`
+  (`verdict`, `status`, `shares`, `binding_constraint`); `doctor` adds
+  `portfolio_equity` and degrades when a given book has no positive `equity`.
+
+Changed: a run's prompt versions and `replay_id` differ from earlier runs
+(`PortfolioContext.render` prints equity/risk, the risk/PM prompts carry the
+block), and the config digest in the checkpoint signature includes the new keys —
+in-flight checkpoints deliberately do not resume across this change.
+
+Tests: `tests/test_advisory.py` (21), `tests/test_advisory_report.py` (3),
+`tests/test_sizing_config.py` (3), plus additions to the portfolio, structured
+agent, report-gate and risk-quantification suites; wrapper
+`tests/test_run_analysis_advisory.py`. Full suite 1746 passed, 1 skipped.
 
 ## [Fork v1.0.12] — 2026-10-21
 
