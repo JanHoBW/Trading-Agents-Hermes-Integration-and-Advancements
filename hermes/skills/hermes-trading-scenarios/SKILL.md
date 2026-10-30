@@ -1,7 +1,7 @@
 ---
 name: hermes-trading-scenarios
 description: Use for TradingAgents analysis and generic workflow fixes.
-version: 1.0.26
+version: 1.0.27
 author: Jan Homoth
 license: MIT
 platforms: [linux, macos, windows]
@@ -289,6 +289,17 @@ Pitfalls: `--print-to-pdf` needs an absolute path under the user's home/workspac
 ## Post-run review (finished report vs live prices)
 
 When the user asks days after a run to look at the latest report against current prices ("Bewerte die Schwankungen der letzten X Tage", "ist das ein technisches Einstiegssignal?"): follow `references/post-run-review.md` — locate the newest run dir, read only `5_portfolio/decision.md` + `1_analysts/market.md`, fetch live Yahoo data, recompute indicators with `scripts/live_indicators.py`, and evaluate against the report's own trigger rules (never contradict its hard rules; state what would confirm next).
+
+## Portfolio analysis (book-level)
+
+TradingAgents has **no `portfolio` command**: `--portfolio` is context for one ticker run (the CLI has only `run`, `backtest`, `memory`, `login`, `logout`). A book-level analysis is orchestrated in four steps — do not invent a new engine for it:
+
+1. **Deterministic book first.** Load `~/.tradingagents/portfolio.json` with `load_portfolio()`, refresh instruments/FX (`refresh_book()` or `doctor`), then `advisory.book_exposure()`. It yields market values, per-instrument exposure, look-through groups, cap breaches and FX status. Add cost-basis P&L from `quantity × average_price` (label it as book values, not tax).
+2. **Run only the risk-carrying underlyings**, not every line: the dominant fund/ETF, the largest look-through name including its derivative, the largest single share, and the hedge. Pass the real book and the model the user named (e.g. `--api-url=https://openrouter.ai/api/v1 --model=deepseek/deepseek-v4.1-flash-1017 --custom-api-key-env=OPENROUTER_API_KEY`). `--debate-rounds=1 --risk-rounds=1` is the fast book view; parallel `--bg` with one `--suffix` is fine for a batch (the `--ui` rule applies to single interactive runs).
+3. **Separate the two views.** Capital weights (market value) and economic exposure (fund look-through + derivative notional) are not additive: a fund and its constituents are the same money. Never sum the fund row with its look-through groups.
+4. **Read `sizing.json`, not the PM prose, for the size.** Quote rating, target, entry/stop and `advisory` from the run; flag prose that contradicts the engine. `Hold` yields `BLOCKED` (no stop needed) — that is a no-trade state, not a failed run.
+
+Pitfalls, all seen live: a book line keyed by depot WKN or ADR (`A40Y9K`, `A420WD`) is invisible to a run on the Yahoo symbol unless the position carries `analysis_ticker` (funds are grouped by `fund_symbol` automatically); without it the run sizes a fresh position — or a short — beside the real one. `Sell` while holding is an **exit**, not a short. Write the deliverable to `~/.tradingagents/reports/portfolio/<date>/` (`portfolio_facts.json`, `.md`, `.html`) and deliver the HTML.
 
 ## Comparison mode
 
