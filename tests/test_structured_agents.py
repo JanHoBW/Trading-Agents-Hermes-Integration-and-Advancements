@@ -278,6 +278,31 @@ class TestTraderAgent:
         result = trader(_make_trader_state())
         assert result["trader_investment_plan"] == plain_response
 
+    def test_the_typed_proposal_survives_the_node(self, monkeypatch):
+        """Deterministic sizing needs the numbers, not the rendered prose."""
+        from tradingagents.agents.trader import trader as trader_module
+
+        monkeypatch.setattr(trader_module.advisory, "market_levels",
+                            lambda *a, **k: {"available": True, "last_close": 189.5,
+                                             "atr": 4.2, "adv_value": 1e8})
+        captured = {}
+        proposal = TraderProposal(action=TraderAction.BUY, reasoning="x",
+                                  entry_price=189.5, stop_loss=178.0)
+        state = {**_make_trader_state(), "trade_date": "2026-08-14"}
+        result = create_trader(_structured_trader_llm(captured, proposal))(state)
+        assert result["trader_proposal"]["action"] == "Buy"
+        assert result["trader_proposal"]["entry_price"] == 189.5
+        assert result["trader_proposal"]["stop_loss"] == 178.0
+        assert result["market_levels"]["atr"] == 4.2
+
+    def test_the_free_text_fallback_stores_no_proposal(self):
+        llm = MagicMock()
+        llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
+        llm.invoke.return_value = MagicMock(content="FINAL TRANSACTION PROPOSAL: **HOLD**")
+        result = create_trader(llm)(_make_trader_state())
+        assert result["trader_proposal"] is None
+        assert result["market_levels"] == {}      # no trade_date: no level lookup
+
 
 # ---------------------------------------------------------------------------
 # Research Manager agent: structured happy path + fallback

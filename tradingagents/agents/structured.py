@@ -81,6 +81,25 @@ def invoke_structured(structured_llm: Any | None, prompt: Any, agent_name: str) 
         return None
 
 
+def invoke_typed_or_freetext(
+    structured_llm: Any | None,
+    plain_llm: Any,
+    prompt: Any,
+    render: Callable[[T], str],
+    agent_name: str,
+) -> tuple[T | None, str]:
+    """The parsed object plus the rendered markdown; ``(None, text)`` on the fallback.
+
+    A caller that needs the typed fields downstream (deterministic sizing reads
+    the Trader's entry/stop) keeps the object here instead of re-parsing the
+    markdown it just rendered.
+    """
+    result = invoke_structured(structured_llm, prompt, agent_name)
+    if result is not None:
+        return result, render(result)
+    return None, plain_llm.invoke(prompt).content
+
+
 def invoke_structured_or_freetext(
     structured_llm: Any | None,
     plain_llm: Any,
@@ -89,7 +108,5 @@ def invoke_structured_or_freetext(
     agent_name: str,
 ) -> str:
     """Run the structured call and render to markdown; fall back to free-text on any failure."""
-    result = invoke_structured(structured_llm, prompt, agent_name)
-    if result is not None:
-        return render(result)
-    return plain_llm.invoke(prompt).content
+    _result, text = invoke_typed_or_freetext(structured_llm, plain_llm, prompt, render, agent_name)
+    return text

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage
 
+from tradingagents import advisory
 from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
@@ -13,7 +14,7 @@ from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_typed_or_freetext,
 )
 
 
@@ -82,7 +83,7 @@ def create_trader(llm):
             },
         ]
 
-        trader_plan = invoke_structured_or_freetext(
+        proposal, trader_plan = invoke_typed_or_freetext(
             structured_llm,
             llm,
             messages,
@@ -90,9 +91,19 @@ def create_trader(llm):
             "Trader",
         )
 
+        # Verified price structure for the deterministic sizing. One cached
+        # OHLCV load, fail-open: a miss leaves the Trader's own levels in charge
+        # and the sizing says which input is missing.
+        trade_date = str(state.get("trade_date") or "").strip()
+        levels = advisory.market_levels(company_name, trade_date) if trade_date else {}
+
         return {
             "messages": [AIMessage(content=trader_plan)],
             "trader_investment_plan": trader_plan,
+            # The typed fields survive the node; the rendered markdown above is
+            # what the downstream agents read.
+            "trader_proposal": proposal.model_dump(mode="json") if proposal is not None else None,
+            "market_levels": levels,
         }
 
     return trader_node
