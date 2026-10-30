@@ -29,6 +29,18 @@ class Position(BaseModel):
 class PortfolioContext(BaseModel):
     cash: float | None = Field(default=None, description="Free cash available")
     currency: str | None = Field(default=None, description="Currency label for cash and prices")
+    equity: float | None = Field(
+        default=None,
+        description="Total account value in `currency`; required for risk-based sizing",
+    )
+    risk_per_trade_pct: float | None = Field(
+        default=None, ge=0, le=100,
+        description="Maximum loss per trade as a percentage of equity; overrides the run config",
+    )
+    max_position_pct: float | None = Field(
+        default=None, gt=0, le=100,
+        description="Maximum single-position notional as a percentage of equity",
+    )
     positions: list[Position] = Field(default_factory=list)
 
     def position_in(self, ticker: str) -> Position | None:
@@ -45,6 +57,13 @@ class PortfolioContext(BaseModel):
             lines = [f"- Current position in {symbol}: {held.quantity:,.4g} units{price}"]
         if self.cash is not None:
             lines.append(f"- Cash available: {self.cash:,.2f}{' ' + self.currency if self.currency else ''}")
+        if self.equity is not None:
+            lines.append(f"- Account equity: {self.equity:,.2f}"
+                         f"{' ' + self.currency if self.currency else ''}")
+        if self.risk_per_trade_pct is not None:
+            lines.append(f"- Risk budget per trade: {self.risk_per_trade_pct:g} % of equity")
+        if self.max_position_pct is not None:
+            lines.append(f"- Maximum position size: {self.max_position_pct:g} % of equity")
         others = [p for p in self.positions if p is not held]
         if others:
             lines.append("- Other positions: " + ", ".join(f"{p.ticker.upper()} {p.quantity:,.4g}" for p in others))

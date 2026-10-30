@@ -223,6 +223,44 @@ def test_cli_rejects_an_unusable_portfolio_file_before_running(tmp_path, monkeyp
 
 
 @pytest.mark.unit
+def test_account_policy_fields_round_trip():
+    """Equity and the risk policy belong to the account, not to the run config."""
+    book = PortfolioContext.model_validate({
+        "equity": 25000.0, "cash": 5000.0, "currency": "EUR",
+        "risk_per_trade_pct": 0.5, "max_position_pct": 10,
+        "positions": [{"ticker": "RHM.DE", "quantity": 10, "average_price": 900.0}],
+    })
+    assert book.equity == 25000.0
+    assert book.risk_per_trade_pct == 0.5
+    text = book.render("RHM.DE")
+    assert "Account equity: 25,000.00 EUR" in text
+    assert "Risk budget per trade: 0.5 % of equity" in text
+    assert "Maximum position size: 10 % of equity" in text
+
+
+@pytest.mark.unit
+def test_equity_changes_the_checkpoint_fingerprint():
+    """A changed equity is a changed book and must not resume the old thread."""
+    a = PortfolioContext.model_validate({"cash": 1000.0, "equity": 20000.0})
+    b = PortfolioContext.model_validate({"cash": 1000.0, "equity": 21000.0})
+    assert a.fingerprint() != b.fingerprint()
+
+
+@pytest.mark.unit
+def test_a_book_without_equity_still_validates():
+    """Sizing then reports "equity" as missing; it does not invent a book size."""
+    assert PortfolioContext.model_validate({"cash": 1000.0}).equity is None
+
+
+@pytest.mark.unit
+def test_partial_portfolio_states_only_what_it_was_given():
+    """Equity omitted is not equity zero; the line is absent rather than invented."""
+    text = PortfolioContext.model_validate({"cash": 1000.0}).render("AAPL")
+    assert "equity" not in text.lower()
+    assert "Risk budget" not in text
+
+
+@pytest.mark.unit
 def test_cli_passes_a_valid_portfolio_into_the_run(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
