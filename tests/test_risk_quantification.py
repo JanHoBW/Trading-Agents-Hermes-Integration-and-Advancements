@@ -77,6 +77,57 @@ def test_portfolio_manager_prompt_carries_the_quantification_rule():
     assert RISK_QUANTIFICATION in captured["prompt"]
 
 
+def _sized_state():
+    """A state whose book, proposal and market levels can be sized."""
+    return {
+        **_state(),
+        "portfolio_account": {"equity": 25000.0, "cash": 5000.0, "currency": "EUR"},
+        "trader_proposal": {"action": "Buy", "entry_price": 100.0, "stop_loss": 90.0},
+        "market_levels": {"available": True, "last_close": 100.0, "atr": 5.0,
+                          "adv_value": 10_000_000.0},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("factory", [create_aggressive_debator, create_conservative_debator,
+                                     create_neutral_debator])
+def test_each_risk_debator_sees_the_deterministic_size(factory):
+    """The debate argues about a size the code computed, not one it guessed."""
+    llm, captured = _capturing_llm()
+    factory(llm)(_sized_state())
+    prompt = captured["prompt"]
+    assert "Deterministic sizing of the Trader's proposal" in prompt
+    assert "25 units" in prompt
+    assert "risk budget 1.00 %" in prompt
+
+
+@pytest.mark.unit
+def test_the_pm_prompt_carries_the_deterministic_size():
+    from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
+
+    captured = {}
+    structured = MagicMock()
+    structured.invoke.side_effect = lambda prompt: (
+        captured.__setitem__("prompt", prompt)
+        or PortfolioDecision(rating=PortfolioRating.BUY, executive_summary="x",
+                             investment_thesis="y")
+    )
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+
+    create_portfolio_manager(llm)(_sized_state())
+    assert "25 units" in captured["prompt"]
+    assert "Use these figures verbatim" in captured["prompt"]
+
+
+@pytest.mark.unit
+def test_without_a_book_the_prompt_forbids_a_share_count():
+    llm, captured = _capturing_llm()
+    create_conservative_debator(llm)(_state())
+    assert "Deterministic sizing: not available" in captured["prompt"]
+    assert "Do not state a share count" in captured["prompt"]
+
+
 @pytest.mark.unit
 def test_constant_names_the_required_scenarios_and_the_missing_data_rule():
     assert "broad index -10 %" in RISK_QUANTIFICATION

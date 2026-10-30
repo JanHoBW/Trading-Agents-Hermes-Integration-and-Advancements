@@ -15,6 +15,7 @@ from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
+    get_sizing_context_from_state,
 )
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
@@ -28,6 +29,7 @@ def create_portfolio_manager(llm):
     def portfolio_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
         portfolio_context = get_portfolio_context_from_state(state)
+        sizing_context = get_sizing_context_from_state(state)
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
@@ -49,6 +51,7 @@ def create_portfolio_manager(llm):
 {instrument_context}
 
 {portfolio_context}
+{sizing_context}
 
 ---
 
@@ -89,9 +92,13 @@ Write these sections, in this order, starting with the rating on its own line:
         if decision is not None:
             final_trade_decision = render_pm_decision(decision)
             final_rating = decision.rating.value
+            # The typed target drives the reward/risk check in the sizing; the
+            # rendered text keeps it for the reader, this keeps it for the code.
+            final_price_target = decision.price_target
         else:
             final_trade_decision = llm.invoke(prompt).content
             final_rating = parse_rating(final_trade_decision)
+            final_price_target = None
 
         new_risk_debate_state = {
             "history": risk_debate_state["history"],
@@ -109,6 +116,7 @@ Write these sections, in this order, starting with the rating on its own line:
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
             "final_rating": final_rating,
+            "final_price_target": final_price_target,
             # The routing layer's own record, carried into the report so the
             # gaps sit next to the conclusion instead of only in a sidecar log.
             "data_coverage": coverage_snap,

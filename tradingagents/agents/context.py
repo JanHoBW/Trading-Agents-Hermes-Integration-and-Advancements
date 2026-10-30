@@ -204,6 +204,24 @@ def report_or_absent(text: str, source: str) -> str:
     return f"(No {source} report in this run: it is not available, not an empty finding.)"
 
 
+def get_sizing_context_from_state(state: Mapping[str, Any]) -> str:
+    """The deterministic sizing block for the risk analysts and the PM.
+
+    Fail-open: a sizing miss must never cost a prompt. A run without a book
+    still gets the explicit "not available" sentence from ``render_context``,
+    so the agents are told not to state a share count instead of guessing one.
+    """
+    try:
+        from tradingagents import advisory
+        from tradingagents.dataflows.config import get_config
+
+        plan = advisory.build_from_state(state, config=get_config())
+        return advisory.render_context(plan)
+    except Exception as exc:  # noqa: BLE001 -- a prompt must not die on sizing
+        logger.debug("Could not render the deterministic sizing block: %s", exc)
+        return ""
+
+
 def get_portfolio_context_from_state(state: Mapping[str, Any]) -> str:
     """Return the caller's portfolio block, or a notice that none was given.
 
