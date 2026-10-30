@@ -381,6 +381,9 @@ def render_context(plan: Mapping[str, Any]) -> str:
         if plan.get("direction") == "none":
             return ("Deterministic sizing: no trade — the rating is Hold, so there is no "
                     "position to size. Do not propose a share count.")
+        if plan.get("direction") == "unknown":
+            return ("Deterministic sizing: no executable size — the direction could not be "
+                    "established (no structured Trader proposal). Do not propose a share count.")
         position = plan.get("position") or {}
         return (f"Deterministic sizing: no executable size (the "
                 f"{position.get('binding_constraint') or 'position caps'} limited it to 0 units). "

@@ -199,6 +199,9 @@ def test_context_block_says_no_trade_instead_of_none_units():
     # A cap that reduces the size to zero is named, not rendered as "None".
     tiny = advisory.render_context(plan(account={**ACCOUNT, "cash": 50.0}))
     assert "no executable size" in tiny and "None units" not in tiny
+    # A direct caller without a rating but with levels: no side to size.
+    unsided = advisory.render_context(plan(rating=None))
+    assert "direction could not be established" in unsided
 
 
 @pytest.mark.unit
