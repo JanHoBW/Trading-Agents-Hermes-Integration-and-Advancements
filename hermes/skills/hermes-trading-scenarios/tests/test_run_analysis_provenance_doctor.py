@@ -157,6 +157,9 @@ class DoctorTests(unittest.TestCase):
         with patch.object(run_analysis, "find_install_root", return_value=repo), \
                 patch.object(run_analysis, "_repo_health", return_value=health or {
                     "benchmark": "^GDAXI", "horizons": [5, 21, 63, 126],
+                    # A configured issuer keeps this a positive-path test; the
+                    # missing-adapter case has its own degraded check.
+                    "ir_facts": {"configured": True, "reason": "ok"},
                     "memory_log_path": str(repo / "memory" / "log.md"),
                     "issuer_registry_path": str(repo / "registry.json"),
                     "memory_entries": 3, "memory_pending": 1, "memory_writable": True}), \

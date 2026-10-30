@@ -23,7 +23,9 @@ Flags for run (all optional; equals form --flag=value, space form is a hard erro
   --api-url URL          Generic OpenAI-compatible backend (implies the custom profile);
                          must be combined with --model
   --model M              Model name for --api-url (e.g. unsloth/qwen3.8-27b)
-  --portfolio F          JSON with CURRENT holdings + cash (PortfolioContext)
+  --portfolio F          JSON with CURRENT holdings + cash (PortfolioContext);
+                         add "equity" so the deterministic sizing can derive a size
+                         ("risk_per_trade_pct"/"max_position_pct" override the config)
   --news-window-days N   Headline window (news + sentiment + supplement), default 7
   --event-window-days N  First-party event-context window, default 180
   --no-event-context     Do not inject the 180-day first-party block
@@ -82,7 +84,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.5.0"
+WRAPPER_VERSION = "2.6.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -781,6 +783,36 @@ def read_quality_gate(out: Path) -> dict | None:
     return None
 
 
+def read_advisory(out: Path) -> dict | None:
+    """The run's deterministic sizing verdict (``sizing.json``), newest wins.
+
+    The report tree already carries the full record; the orchestration layer
+    only needs to know whether a size was derived and which constraint bound it.
+    A missing or corrupt file is "not recorded", never a default.
+    """
+    candidates = sorted(
+        (p for p in out.rglob("sizing.json") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        position = data.get("position") or {}
+        return {
+            "verdict": data.get("verdict"),
+            "status": data.get("status"),
+            "shares": position.get("shares"),
+            "binding_constraint": position.get("binding_constraint"),
+            "path": str(path),
+        }
+    return None
+
+
 def write_provenance(out: Path, payload: dict) -> Path:
     """Write ``provenance.json`` into the run dir (mode 600: it names endpoints)."""
     prov = out / "provenance.json"
@@ -1003,9 +1035,23 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if getattr(args, "portfolio", None):
         try:
             portfolio_file(args.portfolio)
-            check("portfolio", "ok", args.portfolio)
         except argparse.ArgumentTypeError as exc:
             check("portfolio", "blocked", str(exc))
+        else:
+            check("portfolio", "ok", args.portfolio)
+            # Deterministic sizing needs equity; without it the plan is BLOCKED,
+            # which an unattended chain should know before spending hours.
+            try:
+                book = json.loads(Path(args.portfolio).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                book = {}
+            equity = book.get("equity") if isinstance(book, dict) else None
+            if not isinstance(equity, (int, float)) or equity <= 0:
+                check("portfolio_equity", "degraded",
+                      "no positive 'equity' -> deterministic sizing will be BLOCKED")
+            else:
+                check("portfolio_equity", "ok",
+                      f"equity {equity:,.2f} {book.get('currency') or ''}".strip())
     if getattr(args, "supplement", None):
         try:
             supplement(args.supplement)
@@ -1471,6 +1517,7 @@ def execute_run(a: argparse.Namespace) -> None:
             "data_coverage": matrix,
             "data_coverage_source": "report" if matrix else None,
             "quality_gate": read_quality_gate(out),
+            "advisory": read_advisory(out),
             "prompt_versions": prompts,
             "analysis_windows": analysis_windows_summary(run_date(a)),
             "replay_id": replay_id(a, prof, prompts, effort),
@@ -1485,6 +1532,7 @@ def execute_run(a: argparse.Namespace) -> None:
                   "output_dir": str(out), "report_files": files,
                   "provenance": str(prov), "data_coverage": matrix,
                   "quality_gate": read_quality_gate(out),
+                  "advisory": read_advisory(out),
                   "note": "TUI ran in its own terminal window; console output was on "
                           "the TTY (no log file), the saved report files are the result."}
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -1548,6 +1596,7 @@ def execute_run(a: argparse.Namespace) -> None:
                         "llm_chain":chain,"attempts":attempts,
                         "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions": prompts,
                         "quality_gate": read_quality_gate(out),
+                        "advisory": read_advisory(out),
                         "analysis_windows": analysis_windows_summary(run_date(a)),
                         "replay_id":replay_id(a,prof,prompts,effort),
                         "reasoning_effort":effort,
@@ -1556,7 +1605,8 @@ def execute_run(a: argparse.Namespace) -> None:
             prov.write_text(json.dumps(provenance,indent=2),encoding="utf-8")
             result.update({"llm": prof, "elapsed_seconds": elapsed, "log": str(log), "provenance": str(prov),
                            "attempts": attempts, "report_files": files, "data_coverage": data_coverage,
-                           "quality_gate": read_quality_gate(out)})
+                           "quality_gate": read_quality_gate(out),
+                           "advisory": read_advisory(out)})
             print(json.dumps(result, indent=2, ensure_ascii=False)); return
         # Failed. If it looks like an LLM-backend fault and backends remain, fall back.
         if fallback_reason and idx < len(chain) - 1:
@@ -1630,7 +1680,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="generisches OpenAI-kompatibles Backend (impliziert custom); muss mit --model kombiniert werden")
     pr.add_argument("--model", default=None, help="Modell-Name für --api-url (z. B. unsloth/qwen3.8-27b)")
     pr.add_argument("--portfolio", type=portfolio_file, default=None,
-                    help="JSON mit AKTUELLEN Holdings+Cash (PortfolioContext)")
+                    help="JSON mit AKTUELLEN Holdings+Cash (PortfolioContext); "
+                         "'equity' nötig für die deterministische Positionsgröße")
     pr.add_argument("--analysts", type=analysts, default="market,news,fundamentals,social")
     pr.add_argument("--debate-rounds", type=rounds, default=None, help="Default 3 (--quick: 1); explizit gesetzt schlägt --quick")
     pr.add_argument("--risk-rounds", type=rounds, default=None, help="Default 2 (--quick: 1); explizit gesetzt schlägt --quick")
