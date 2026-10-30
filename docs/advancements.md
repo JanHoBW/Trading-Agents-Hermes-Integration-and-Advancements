@@ -98,6 +98,57 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.14] — 2026-10-30
+
+### Added — instrument metadata, exposure and a concentration check
+
+A book is not made of shares only. `PortfolioContext` counted a knock-out as
+"305 units", so a levered 6 234 € position with 31 970 € of Rheinmetall exposure
+looked smaller than a 10 000 € share position — and the position cap was applied
+to the wrong number.
+
+- **Instrument master data.** `tradingagents/instruments.py` resolves a WKN/ISIN
+  to what its security page states: `kind` (`share`, `etf`, `etc`, `knock_out`,
+  `option`), `underlying` (+ name, price, currency), contractual `ratio`,
+  direction, `barrier`, and `leverage`/`reset` for daily-leveraged notes. Fields
+  the page does not state stay `None`; an unresolved issuer name stays `None`
+  rather than being guessed. Cached at `~/.tradingagents/instruments.json` with
+  `source` and `as_of`, refreshed only when stale; a failed refresh keeps the
+  older record instead of restamping it. CLI:
+  `python -m tradingagents.instruments MK0L4Q --force`.
+- **Exposure.** `book_exposure()` turns every position into an exposure: a
+  knock-out through `units × ratio × underlying price × direction`, a share,
+  ETF or ETC at its broker market value (doubled for a daily-leveraged note).
+  A row that cannot be valued is `unknown` with a reason — never read as one
+  share per unit.
+- **Concentration.** Exposure is grouped per underlying and compared with
+  `max_position_pct`; a group above the cap is named in a warning
+  (`concentration`), not a blocker — an existing concentration is a fact to
+  report, not a reason to fail the run.
+- **Netting.** The position cap subtracts exposure already held in the analyzed
+  name through a derivative, expressed in units: with 300 k€ equity and
+  31 970 € of RHM exposure via `MK0L4Q`, `by_position` drops from 45 to 14 units
+  (`position.existing_units_equivalent`). A short derivative does not offset a
+  long entry, and an exposure in another currency is *not* netted silently (it
+  is reported as `exposure_currency`).
+- **Report and gate.** Section VI gains *Exposure by underlying*
+  (`Underlying | Instruments | Net | Gross | % of equity | Status`) plus
+  `exposure` in `sizing.json`; `quality_gate.json` adds the non-blocking
+  `book_exposure` check. `PortfolioContext.Position` gains `market_value`.
+- **Wrapper 2.7.0.** `doctor` adds `portfolio_instruments`: a book entry without
+  a term-sheet record is named before the run, not discovered as a blocked plan
+  afterwards.
+
+Changed: `PortfolioContext` fingerprint changes with `market_value`, and
+`build_from_state` reads the instrument cache (disk only, no network) — a run
+with a book now sizes against exposure, so `by_position` can be smaller than in
+earlier runs. Known limit: an ETF's look-through to its constituents needs the
+issuer's daily weights and is reported as unmodelled, and foreign-currency
+exposure is flagged rather than converted.
+
+Tests: `tests/test_instruments.py` (18), plus additions to the advisory,
+advisory-report and report-gate suites. Full suite 1795 passed, 1 skipped.
+
 ## [Fork v1.0.13] — 2026-10-30
 
 ### Added — deterministic position sizing and a pre-trade discipline gate

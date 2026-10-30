@@ -91,6 +91,21 @@ def test_an_etf_is_named_without_its_share_class_suffix():
     assert record.name == "WisdomTree Europe Defence UCITS ETF"
 
 
+SHARE = page(
+    "Equinor ASA Aktie (ADR) Aktie (A2JLT6, EQNR) - Kurs, Chart, News & Kennzahlen",
+    "Typ", "Aktie",
+)
+
+
+@pytest.mark.unit
+def test_a_plain_share_is_a_share_with_its_venue_symbol():
+    record = instruments.parse_ariva(SHARE, "A2JLT6", as_of="2026-10-30")
+    assert record.kind == "share"
+    assert record.name == "Equinor ASA"
+    assert record.underlying == "EQNR"
+    assert record.ratio is None, "a share has no ratio and must not invent one"
+
+
 @pytest.mark.unit
 def test_an_unknown_page_states_no_numbers():
     record = instruments.parse_ariva(PLAIN, "XXXXXX", as_of="2026-10-30")

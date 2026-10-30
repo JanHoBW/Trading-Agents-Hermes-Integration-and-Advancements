@@ -143,7 +143,7 @@ def _kind_of(title: str, cells: list[str]) -> str:
     asset = (_value_after(cells, "Typ") or "").lower()
     if "edelmetall" in asset:
         return "etc"
-    if "aktie" in asset:
+    if "aktie" in asset or re.search(r"\baktie\b", head):
         return "share"
     return "unknown"
 
@@ -183,6 +183,14 @@ def parse_ariva(
     underlying = underlying_name = None
     underlying_price = underlying_currency = None
     ratio = barrier = leverage = direction = reset = None
+
+    if kind == "share":
+        # The page title carries the venue symbol: "Equinor ASA Aktie (ADR)
+        # Aktie (A2JLT6, EQNR) - Kurs ..." -> EQNR.
+        name = re.split(r"\s+Aktie\b", title)[0].strip() or None
+        symbol_match = re.search(r"\(([A-Z0-9]{4,12}),\s*([A-Z0-9.\-]{1,12})\)", title)
+        if symbol_match:
+            underlying = symbol_match.group(2)
 
     if kind in {"etf", "etc", "fund"}:
         name = re.split(r"\s+-\s+", title)[0].strip() or None

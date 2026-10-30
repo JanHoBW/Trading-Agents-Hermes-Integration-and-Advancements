@@ -175,6 +175,18 @@ def run_quality_gate(report_dir) -> dict:
               + (f"; blocked by {', '.join(failed_sizing)}" if failed_sizing else ""),
               blocking=False)
 
+    exposure = (sizing or {}).get("exposure") or {}
+    if exposure.get("rows"):
+        unresolved = exposure.get("unresolved") or []
+        over = [name for name, group in (exposure.get("by_underlying") or {}).items()
+                if group.get("over_cap")]
+        detail = "every held instrument modelled to an exposure"
+        if unresolved:
+            detail = "exposure not modelled for: " + ", ".join(unresolved)
+        if over:
+            detail += f"; above the position cap: {', '.join(over)}"
+        check("book_exposure", not unresolved and not over, detail, blocking=False)
+
     # Warnings: worth surfacing to the reader, not worth failing the run.
     missing = [label for label, rel in EXPECTED_SECTIONS
                if not _read(report_dir / rel).strip()]

@@ -108,8 +108,52 @@ or per book:
 given book has no positive `equity` — an unattended chain should stop there
 rather than spend hours on a run whose sizing will be blocked.
 
+## Derivatives, ETFs and exposure
+
+A book is not made of shares only, so a position is valued as **exposure**, not
+as a unit count. The term-sheet facts come from the instrument cache
+(`~/.tradingagents/instruments.json`), which is filled by the resolver:
+
+```bash
+python -m tradingagents.instruments MK0L4Q FG40N8 --force   # WKN/ISIN -> record
+```
+
+Each record carries `kind` (`share`, `etf`, `etc`, `knock_out`, `option`),
+`underlying` + its price/currency, the contractual `ratio`, the barrier-derived
+`direction`, and `leverage`/`reset` for daily-leveraged notes, stamped with
+`source` and `as_of`. Missing fields stay missing.
+
+| Position | Exposure |
+|---|---|
+| Knock-out / option | `units × ratio × underlying price × direction` |
+| Share, ETF, ETC | broker `market_value` (× `leverage` for a daily note) |
+| Unresolved or no market value | `unknown` with a reason — never 1:1 |
+
+`exposure.by_underlying` groups them per underlying; a group above
+`max_position_pct` is a **warning** (`concentration`), because an existing
+concentration is a fact to report, not a reason to fail a run.
+
+The position cap nets what is already held in the analyzed name through a
+derivative: 31 970 € of RHM exposure at a 1 012 € price is 31,59
+unit-equivalents, so `by_position` falls from 45 to 14 units. A short derivative
+does not offset a long entry, and a foreign-currency exposure is flagged
+(`exposure_currency`) instead of being converted at a rate nobody verified.
+
+`doctor TICKER --portfolio=FILE` adds `portfolio_instruments`, naming any booked
+WKN without a term-sheet record.
+
+### Known limits
+
+- **ETF look-through** needs the issuer's daily weights. Without them the
+  constituents inside a sector ETF stay unmodelled — the report says so rather
+  than estimating a Rheinmetall share of a defence basket.
+- **Daily-leveraged notes** are path-dependent; the model stores the leverage
+  and a warning, not a constant delta.
+- **Options** would need greeks; only the linear knock-out is modelled.
+- **Currency**: exposures are compared only within one currency.
+
 ## What it deliberately does not do
 
 No order, broker or wallet path; no options greeks; no portfolio optimisation;
-no invented sensitivity. Beta, correlation and exposure are never derived — if
-the reports did not state them, the plan does not either.
+no invented sensitivity. Beta and correlation are never derived — if the
+reports did not state them, the plan does not either.

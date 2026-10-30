@@ -80,3 +80,21 @@ def test_without_a_plan_the_section_is_absent(tmp_path):
     report = (tmp_path / "complete_report.md").read_text(encoding="utf-8")
     assert "Position Sizing" not in report
     assert "VI. Data Coverage" in report      # numbering untouched without the plan
+
+
+@pytest.mark.unit
+def test_the_exposure_table_is_written_when_the_book_holds_instruments():
+    state = _state(with_plan=False)
+    state["advisory"] = advisory.build_advisory(
+        ticker="RHM.DE", as_of="2026-10-30", rating="Buy",
+        proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0},
+        account={"equity": 300000.0, "cash": 50000.0, "currency": "EUR",
+                 "positions": [{"ticker": "MK0L4Q", "quantity": 305, "market_value": 6234.46}]},
+        levels={"available": True, "last_close": 1000.0, "atr": 20.0, "adv_value": 1e7},
+        instruments={"MK0L4Q": {"kind": "knock_out", "underlying": "RHM.DE", "ratio": 0.1,
+                                "underlying_price": 1048.2, "underlying_currency": "EUR",
+                                "direction": "long"}},
+    )
+    section = advisory.render_markdown(state["advisory"])
+    assert "### Exposure by underlying" in section
+    assert "| RHM.DE | MK0L4Q |" in section

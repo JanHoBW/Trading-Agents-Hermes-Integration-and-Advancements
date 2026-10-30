@@ -265,3 +265,90 @@ def test_market_levels_fails_open(monkeypatch):
     levels = advisory.market_levels("X.DE", "2026-10-30")
     assert levels["available"] is False
     assert levels["reason"].startswith("RuntimeError: vendor down")
+
+
+# --- exposure: derivatives and funds are not share counts -------------------
+
+BIG = {"equity": 300_000.0, "cash": 50_000.0, "currency": "EUR", "positions": []}
+KNOCK_OUT = {
+    "MK0L4Q": {"kind": "knock_out", "underlying": "RHM.DE", "underlying_name": "Rheinmetall AG",
+               "ratio": 0.1, "underlying_price": 1048.2, "underlying_currency": "EUR",
+               "direction": "long", "source": "ariva/MK0L4Q", "as_of": "2026-10-30"},
+}
+LEVERAGED = {"A0V6ZV": {"kind": "etc", "leverage": 2.0, "reset": "daily",
+                        "name": "WisdomTree Aluminium 2x Daily Leveraged"}}
+
+
+@pytest.mark.unit
+def test_a_knock_out_is_exposure_through_its_ratio():
+    book = {**BIG, "positions": [{"ticker": "MK0L4Q", "quantity": 305, "market_value": 6234.46}]}
+    p = plan(ticker="MK0L4Q", account=book, instruments=KNOCK_OUT)
+    row = p["exposure"]["rows"][0]
+    assert row["exposure"] == pytest.approx(31_970.1)   # 305 x 0.10 x 1048,20
+    assert row["status"] == "ok"
+    assert p["exposure"]["by_underlying"]["RHM.DE"]["net"] == pytest.approx(31_970.1)
+    assert p["exposure"]["status"] == "ok"
+
+
+@pytest.mark.unit
+def test_a_daily_leveraged_note_counts_its_leverage():
+    book = {**BIG, "positions": [{"ticker": "A0V6ZV", "quantity": 792, "market_value": 2005.34}]}
+    p = plan(ticker="A0V6ZV", account=book, instruments=LEVERAGED)
+    assert p["exposure"]["rows"][0]["exposure"] == pytest.approx(4010.68)
+
+
+@pytest.mark.unit
+def test_existing_derivative_exposure_shrinks_the_position_cap():
+    """15 % of 300k is 45 000; 31 970 of it is already exposed through the turbo."""
+    book = {**BIG, "positions": [{"ticker": "MK0L4Q", "quantity": 305, "market_value": 6234.46}]}
+    p = plan(ticker="RHM.DE", account=book, instruments=KNOCK_OUT,
+             proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0})
+    assert p["caps"]["by_position"] == 45 - 31, "31 unit-equivalents are already held via the turbo"
+    assert p["position"]["existing_units_equivalent"] == pytest.approx(31.97, abs=0.01)
+
+
+@pytest.mark.unit
+def test_a_short_derivative_does_not_block_a_long_entry():
+    book = {**BIG, "positions": [{"ticker": "MK0L4Q", "quantity": 305, "market_value": 6234.46}]}
+    short = {"MK0L4Q": {**KNOCK_OUT["MK0L4Q"], "direction": "short"}}
+    p = plan(ticker="RHM.DE", account=book, instruments=short,
+             proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0})
+    assert p["caps"]["by_position"] == 45
+    assert p["position"]["existing_units_equivalent"] == 0.0
+
+
+@pytest.mark.unit
+def test_an_unresolved_instrument_stays_unknown():
+    book = {**BIG, "positions": [{"ticker": "MK0L4Q", "quantity": 305}]}
+    p = plan(ticker="RHM.DE", account=book, instruments={},
+             proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0})
+    assert p["exposure"]["rows"][0]["status"] == "unknown"
+    assert p["exposure"]["rows"][0]["exposure"] is None
+    assert "MK0L4Q" in p["exposure"]["unresolved"]
+    assert _check(p, "book_exposure")["passed"] is False
+    assert _check(p, "book_exposure")["blocking"] is False
+
+
+@pytest.mark.unit
+def test_a_foreign_currency_exposure_is_not_netted_silently():
+    book = {**BIG, "positions": [{"ticker": "FG40N8", "quantity": 441, "market_value": 1217.16}]}
+    oracle = {"FG40N8": {"kind": "knock_out", "underlying": "ORCL", "ratio": 0.1,
+                         "underlying_price": 139.56, "underlying_currency": "USD",
+                         "direction": "short"}}
+    p = plan(ticker="ORCL", account=book, instruments=oracle)
+    assert p["exposure"]["rows"][0]["status"] == "fx_missing"
+    assert _check(p, "exposure_currency")["passed"] is False
+
+
+@pytest.mark.unit
+def test_a_concentrated_book_is_flagged_without_blocking():
+    book = {**BIG, "positions": [{"ticker": "A40Y9K", "quantity": 8171.8, "market_value": 262_151.34}]}
+    etf = {"A40Y9K": {"kind": "etf", "name": "WisdomTree Europe Defence UCITS ETF"}}
+    p = plan(ticker="RHM.DE", account=book, instruments=etf,
+             proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0})
+    group = p["exposure"]["by_underlying"]["A40Y9K"]
+    assert group["pct_equity"] == pytest.approx(87.38, abs=0.01)
+    assert group["over_cap"] is True
+    assert _check(p, "concentration")["passed"] is False
+    assert _check(p, "concentration")["blocking"] is False
+    assert p["verdict"] == "EXECUTE", "a concentrated book is a warning, not a verdict"

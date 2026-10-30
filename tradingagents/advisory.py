@@ -90,6 +90,129 @@ def _held_units(account: Mapping[str, Any], ticker: str) -> float:
     return 0.0
 
 
+def book_exposure(
+    account: Mapping[str, Any] | None,
+    instruments: Mapping[str, Mapping[str, Any]] | None,
+    account_currency: str | None = None,
+) -> dict:
+    """Exposure of every booked position, per instrument and per underlying.
+
+    A knock-out is exposure to its underlying through the contractual ratio; an
+    ETF or an ETC is its market value (times the leverage, when it resets daily).
+    When the ratio or the price is not on record the row is marked ``unknown``
+    with the reason -- the gate may not treat it as one share per unit.
+    """
+    account = dict(account or {})
+    instruments = dict(instruments or {})
+    account_currency = (account_currency or account.get("currency") or "").upper() or None
+    rows: list[dict] = []
+    for position in account.get("positions") or []:
+        key = str(position.get("ticker") or "").strip().upper()
+        if not key:
+            continue
+        meta = dict(instruments.get(key) or {})
+        kind = str(meta.get("kind") or "unknown")
+        units = _num(position.get("quantity")) or 0.0
+        market_value = _num(position.get("market_value"))
+        row = {
+            "key": key,
+            "kind": kind,
+            "name": meta.get("name") or meta.get("underlying_name"),
+            "units": units,
+            "market_value": market_value,
+            "underlying": (meta.get("underlying") or "").upper() or None,
+            "underlying_name": meta.get("underlying_name"),
+            "ratio": _positive(meta.get("ratio")),
+            "leverage": _positive(meta.get("leverage")),
+            "currency": None,
+            "exposure": None,
+            "status": "ok",
+            "reason": None,
+            "source": meta.get("source"),
+            "as_of": meta.get("as_of"),
+        }
+        if kind in {"knock_out", "option"}:
+            ratio, price = row["ratio"], _positive(meta.get("underlying_price"))
+            if ratio is None or price is None:
+                row.update(status="unknown", reason="no ratio or underlying price on record")
+            else:
+                sign = -1.0 if meta.get("direction") == "short" else 1.0
+                row["currency"] = (meta.get("underlying_currency") or "").upper() or None
+                row["exposure"] = round(units * ratio * price * sign, 2)
+        elif kind in {"etf", "etc", "fund", "share"}:
+            leverage = row["leverage"] or 1.0
+            if market_value is None:
+                row.update(status="unknown", reason="no market value in the book")
+            else:
+                sign = -1.0 if units < 0 else 1.0
+                row["currency"] = account_currency
+                row["exposure"] = round(market_value * leverage * sign, 2)
+        else:
+            row.update(status="unknown", reason="instrument not resolved")
+        if row["exposure"] is not None and row["currency"] and account_currency \
+                and row["currency"] != account_currency:
+            # Comparable only after conversion, which this module does not do:
+            # converting silently would invent a rate.
+            row["status"] = "fx_missing"
+            row["reason"] = f"{row['currency']} exposure, no FX rate to {account_currency}"
+        rows.append(row)
+
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        name = row["underlying"] or row["key"]
+        groups.setdefault(name, []).append(row)
+    by_underlying: dict[str, dict] = {}
+    for name, items in groups.items():
+        known = [r for r in items if r["exposure"] is not None and r["status"] == "ok"]
+        currencies = {r["currency"] for r in known if r["currency"]}
+        by_underlying[name] = {
+            "net": round(sum(r["exposure"] for r in known), 2) if known else None,
+            "gross": round(sum(abs(r["exposure"]) for r in known), 2) if known else None,
+            "currency": currencies.pop() if len(currencies) == 1 else ("mixed" if currencies else None),
+            "keys": [r["key"] for r in items],
+            "unknown": [r["key"] for r in items if r["exposure"] is None],
+            "fx": [r["key"] for r in items if r["status"] == "fx_missing"],
+        }
+    unresolved = [r["key"] for r in rows if r["status"] != "ok"]
+    return {
+        "rows": rows,
+        "by_underlying": by_underlying,
+        "unresolved": unresolved,
+        "status": "ok" if not unresolved else ("partial" if rows else "empty"),
+    }
+
+
+def exposure_units_for(
+    ticker: str,
+    exposure: Mapping[str, Any] | None,
+    price: float | None,
+    account_currency: str | None = None,
+) -> tuple[float, str | None]:
+    """Existing exposure in ``ticker`` expressed in units of it, same side only.
+
+    Returns ``(units, reason)``; ``reason`` is set when the exposure cannot be
+    compared (currency mismatch) and the caller must treat it as unmodelled.
+    """
+    price = _positive(price)
+    if price is None:
+        return 0.0, None
+    groups = (exposure or {}).get("by_underlying") or {}
+    group = groups.get((ticker or "").strip().upper())
+    if not group:
+        return 0.0, None
+    if group.get("fx"):
+        # Kept out of `net` on purpose: adding USD to EUR would invent a rate.
+        return 0.0, "fx"
+    if group.get("net") is None:
+        return 0.0, None
+    currency = (group.get("currency") or "").upper() or None
+    account_currency = (account_currency or "").upper() or None
+    if currency and account_currency and currency != account_currency:
+        return 0.0, "fx"
+    same_side = max(0.0, group["net"])
+    return same_side / price, None
+
+
 def market_levels(ticker: str, as_of_date: str, adv_window: int = 20) -> dict:
     """Latest verified close, ATR(14) and average daily traded value at the date.
 
@@ -140,6 +263,7 @@ def build_advisory(
     levels: Mapping[str, Any] | None = None,
     policy: Mapping[str, Any] | None = None,
     target: float | None = None,
+    instruments: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict:
     """The run's one arithmetic sizing plan plus the discipline checklist."""
     policy = {**DEFAULT_POLICY, **dict(policy or {})}
@@ -179,6 +303,25 @@ def build_advisory(
         else:
             currency = str(account.get("currency") or "").strip()
             check("equity", True, f"{equity:,.2f}{' ' + currency if currency else ''}")
+
+    # --- existing exposure ------------------------------------------------
+    # The book may hold the analyzed name directly, through a knock-out, or
+    # through an ETF. Only the first two can be netted; the ETF has no
+    # look-through weights, and saying so is better than guessing a share.
+    exposure = book_exposure(account, instruments, account.get("currency"))
+    if has_book:
+        rows = exposure.get("rows") or []
+        unknown = [r["key"] for r in rows if r["status"] == "unknown"]
+        foreign = [r["key"] for r in rows if r["status"] == "fx_missing"]
+        reasons = []
+        if unknown:
+            reasons.append("no data: " + ", ".join(unknown))
+        if foreign:
+            reasons.append("not comparable (currency): " + ", ".join(foreign))
+        check("book_exposure", not reasons,
+              "every position resolved to an exposure" if not reasons
+              else "; ".join(reasons),
+              blocking=False)
 
     # --- price levels -----------------------------------------------------
     entry = _positive(proposal.get("entry_price"))
@@ -246,6 +389,22 @@ def build_advisory(
     cash = _positive(account.get("cash"))
     risk_pct = _positive(account.get("risk_per_trade_pct")) or float(policy["risk_per_trade_pct"])
     max_pos_pct = _positive(account.get("max_position_pct")) or float(policy["max_position_pct"])
+    over_cap: list[str] = []
+    if equity:
+        for name, group in (exposure.get("by_underlying") or {}).items():
+            if group.get("net") is None:
+                continue
+            pct = abs(group["net"]) / equity * 100
+            group["pct_equity"] = round(pct, 2)
+            group["over_cap"] = pct > max_pos_pct
+            if group["over_cap"]:
+                over_cap.append(f"{name} {pct:.1f} %")
+    if equity and (exposure.get("by_underlying") or {}):
+        check("concentration", not over_cap,
+              f"largest single-underlying exposure within {max_pos_pct:g} % of equity"
+              if not over_cap else
+              f"above {max_pos_pct:g} % of equity: " + ", ".join(over_cap),
+              blocking=False)
     caps: dict[str, int | None] = {}
     position: dict[str, Any] = {}
     if is_exit and entry:
@@ -266,8 +425,14 @@ def build_advisory(
         budget = equity * risk_pct / 100
         caps["by_risk"] = _floor(budget / risk_per_share)
         total_units = _floor(equity * max_pos_pct / 100 / entry)
+        existing_units, fx_reason = exposure_units_for(
+            ticker, exposure, entry, account.get("currency"))
+        if fx_reason:
+            check("exposure_currency", False,
+                  "existing exposure is in another currency and was not netted",
+                  blocking=False)
         held_same_side = max(0.0, held) if direction == "long" else max(0.0, -held)
-        caps["by_position"] = max(0, total_units - _floor(held_same_side))
+        caps["by_position"] = max(0, total_units - _floor(held_same_side + existing_units))
         caps["by_cash"] = _floor(cash / entry) if (cash is not None and direction == "long") else None
         binding = {name: cap for name, cap in caps.items() if cap is not None}
         shares = min(binding.values()) if binding else 0
@@ -279,6 +444,7 @@ def build_advisory(
             "position_pct": round(shares * entry / equity * 100, 2),
             "risk_pct": round(shares * risk_per_share / equity * 100, 2),
             "binding_constraint": min(binding.items(), key=lambda kv: kv[1])[0] if binding else None,
+            "existing_units_equivalent": round(existing_units, 2),
             "currency": account.get("currency"),
             "executable": False,
         }
@@ -328,11 +494,13 @@ def build_advisory(
                   "target": target,
                   "reward_risk": round(reward_risk, 2) if reward_risk else None,
                   "adv_value": adv_value},
-                 position, caps, checks, missing, verdict=verdict, status=status)
+                 position, caps, checks, missing, verdict=verdict, status=status,
+                 exposure=exposure)
 
 
 def _plan(ticker, as_of, rating, direction, trader_action, account, levels,
-          policy, plan_levels, position, caps, checks, missing, *, verdict, status) -> dict:
+          policy, plan_levels, position, caps, checks, missing, *, verdict, status,
+          exposure: Mapping[str, Any] | None = None) -> dict:
     """Assemble the serialisable advisory record."""
     return {
         "schema": SCHEMA,
@@ -350,6 +518,8 @@ def _plan(ticker, as_of, rating, direction, trader_action, account, levels,
         "levels": plan_levels,
         "position": position,
         "caps": caps,
+        "exposure": exposure or {"rows": [], "by_underlying": {}, "unresolved": [],
+                                 "status": "empty"},
         "checks": checks,
         "missing": missing,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -408,6 +578,22 @@ def render_markdown(plan: Mapping[str, Any]) -> str:
         for item in plan["checks"]:
             result = "pass" if item["passed"] else ("FAIL" if item["blocking"] else "warning")
             lines.append(f"| {item['name']} | {result} | {item['detail']} |")
+    exposure = plan.get("exposure") or {}
+    if exposure.get("rows"):
+        lines += ["", "### Exposure by underlying", "",
+                  "| Underlying | Instruments | Net | Gross | % of equity | Status |",
+                  "|---|---|---:|---:|---:|---|"]
+        for name, group in exposure.get("by_underlying", {}).items():
+            keys = ", ".join(group.get("keys") or [])
+            currency = group.get("currency") or ""
+            status = "ok"
+            if group.get("unknown"):
+                status = "unknown: " + ", ".join(group["unknown"])
+            if group.get("over_cap"):
+                status += " (over cap)"
+            lines.append(
+                f"| {name} | {keys} | {_fmt(group.get('net'))} {currency} | "
+                f"{_fmt(group.get('gross'))} | {_fmt(group.get('pct_equity'), 2)} | {status} |")
     return "\n".join(lines)
 
 
@@ -456,6 +642,9 @@ def render_context(plan: Mapping[str, Any]) -> str:
         f"- Position: {position.get('shares')} units, notional "
         f"{_fmt(position.get('notional'))} ({_fmt(position.get('position_pct'), 2, ' % of equity')}), "
         f"risk {_fmt(position.get('risk'))} at the stop",
+        f"- Existing exposure in {plan['ticker']}: "
+        f"{_fmt(position.get('existing_units_equivalent'), 2)} unit-equivalents already "
+        f"counted against the position cap",
         f"- Verdict: {plan['verdict']}; binding constraint: "
         f"{position.get('binding_constraint') or 'none'}",
         "Use these figures verbatim for sizing. If you disagree with a level, say which "
@@ -473,6 +662,13 @@ def build_from_state(state: Mapping[str, Any], *, rating: str | None = None,
                      config: Mapping[str, Any] | None = None) -> dict:
     """Compute the plan from what a run carries; never touches the network."""
     proposal = dict(state.get("trader_proposal") or {})
+    book = state.get("portfolio_account") or {}
+    try:
+        from tradingagents import instruments as instruments_module
+
+        meta = instruments_module.for_book(book)
+    except Exception:  # noqa: BLE001 -- a missing cache must not block a run
+        meta = {}
     return build_advisory(
         ticker=str(state.get("company_of_interest") or ""),
         as_of=str(state.get("trade_date") or ""),
@@ -483,6 +679,7 @@ def build_from_state(state: Mapping[str, Any], *, rating: str | None = None,
         levels=state.get("market_levels") or {},
         policy=policy_from_config(config),
         target=state.get("final_price_target"),
+        instruments=meta,
     )
 
 

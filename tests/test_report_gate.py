@@ -180,3 +180,32 @@ class TestQualityGate:
         assert gate_file.exists()
         assert json.loads(gate_file.read_text(encoding="utf-8"))["status"] in {"APPROVED", "NEEDS_REVIEW"}
         assert state["quality_gate"]["status"] in {"APPROVED", "NEEDS_REVIEW"}
+
+
+@pytest.mark.unit
+class TestExposureGate:
+    def _with_sizing(self, tmp_path, exposure):
+        _tree(tmp_path)
+        (tmp_path / "sizing.json").write_text(json.dumps({
+            "verdict": "EXECUTE", "status": "pass", "checks": [], "exposure": exposure,
+        }), encoding="utf-8")
+        return report_gate.run_quality_gate(tmp_path)
+
+    def test_an_unmodelled_holding_is_a_warning_not_a_failure(self, tmp_path):
+        verdict = self._with_sizing(tmp_path, {
+            "rows": [{"key": "MK0L4Q", "exposure": None, "status": "unknown"}],
+            "by_underlying": {}, "unresolved": ["MK0L4Q"], "status": "partial",
+        })
+        check = _check(verdict, "book_exposure")
+        assert check["passed"] is False and check["blocking"] is False
+        assert "MK0L4Q" in check["detail"]
+        assert verdict["status"] == "APPROVED"
+
+    def test_a_concentrated_underlying_is_named(self, tmp_path):
+        verdict = self._with_sizing(tmp_path, {
+            "rows": [{"key": "A40Y9K", "exposure": 262151.34, "status": "ok"}],
+            "by_underlying": {"A40Y9K": {"net": 262151.34, "over_cap": True}},
+            "unresolved": [], "status": "ok",
+        })
+        check = _check(verdict, "book_exposure")
+        assert "A40Y9K" in check["detail"] and check["passed"] is False

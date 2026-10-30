@@ -84,7 +84,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.6.0"
+WRAPPER_VERSION = "2.7.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -1052,6 +1052,22 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             else:
                 check("portfolio_equity", "ok",
                       f"equity {equity:,.2f} {book.get('currency') or ''}".strip())
+            # A derivative's exposure needs its ratio from the instrument cache;
+            # knowing that before the run is cheaper than a blocked plan after.
+            try:
+                from tradingagents import instruments as _instruments
+
+                held = [str(p.get("ticker")) for p in book.get("positions") or [] if p.get("ticker")]
+                resolved = _instruments.for_book(book)
+                missing = [key for key in held if key.upper() not in resolved]
+                if missing:
+                    check("portfolio_instruments", "degraded",
+                          "no term-sheet record for " + ", ".join(missing)
+                          + " -> their exposure stays unknown")
+                else:
+                    check("portfolio_instruments", "ok", f"{len(held)} instrument(s) resolved")
+            except Exception as exc:  # noqa: BLE001 -- the doctor must not crash
+                check("portfolio_instruments", "degraded", f"{type(exc).__name__}: {exc}"[:120])
     if getattr(args, "supplement", None):
         try:
             supplement(args.supplement)

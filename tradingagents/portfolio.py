@@ -24,6 +24,10 @@ class Position(BaseModel):
     ticker: str = Field(description="Instrument symbol, e.g. AAPL")
     quantity: float = Field(description="Signed units held; negative is short")
     average_price: float | None = Field(default=None, description="Average entry price per unit")
+    market_value: float | None = Field(
+        default=None,
+        description="Current market value in the account currency, as the broker states it",
+    )
 
 
 class PortfolioContext(BaseModel):
