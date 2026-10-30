@@ -53,6 +53,10 @@ class Instrument:
     barrier: float | None = None
     leverage: float | None = None
     reset: str | None = None
+    fund_symbol: str | None = None
+    holdings: list[dict] | None = None
+    holdings_coverage: float | None = None
+    holdings_as_of: str | None = None
     source: str | None = None
     as_of: str | None = None
     fetched_on: str | None = None
@@ -279,6 +283,28 @@ def yahoo_symbol(name: str, *, timeout: float = 10.0) -> str | None:
 
 # --- cache -----------------------------------------------------------------
 
+def fund_holdings(name: str) -> dict | None:
+    """Top holdings of a fund, as fractions of net assets, from the price vendor.
+
+    Only the top of the book is published, so ``coverage`` says how much of the
+    fund the weights actually explain; the rest stays unmodelled on purpose.
+    """
+    try:
+        from tradingagents.dataflows.vendors.yahoo import funds as yahoo_funds
+
+        symbol = yahoo_funds.search_symbol(name)
+        if not symbol:
+            return None
+        holdings = yahoo_funds.top_holdings(symbol)
+    except Exception:  # noqa: BLE001 -- a holdings miss is not an error
+        return None
+    if not holdings:
+        return None
+    return {"symbol": symbol, "holdings": holdings,
+            "coverage": round(sum(item["weight"] for item in holdings), 4),
+            "as_of": date.today().isoformat()}
+
+
 def load_cache(path: str | Path | None = None) -> dict[str, dict]:
     path = Path(path) if path else default_cache_path()
     try:
@@ -322,6 +348,7 @@ def resolve(
     force: bool = False,
     fetch: Callable[[str], str] | None = None,
     symbol_lookup: Callable[[str], str | None] | None = None,
+    holdings_lookup: Callable[[str], dict | None] | None = None,
     today: str | None = None,
     write: bool = True,
 ) -> dict[str, dict]:
@@ -338,19 +365,57 @@ def resolve(
         symbol = str(key).strip().upper()
         if not symbol:
             continue
+        if re.fullmatch(r"[A-Z]{1,6}\d{6}[CP]\d{8}", symbol):
+            # A listed option is its own kind of record: delta from the chain,
+            # not a ratio from a term sheet.
+            if force or not cache.get(symbol):
+                try:
+                    from tradingagents.options import resolve_option
+
+                    record = resolve_option(symbol, as_of=today)
+                except Exception:  # noqa: BLE001 -- keep whatever is cached
+                    record = None
+                if record:
+                    cache[symbol] = record
+                    changed = True
+            continue
         cached = cache.get(symbol)
-        if cached and not force and _fresh(cached, max_age_days, today):
-            continue
-        try:
-            html_text = fetch(symbol)
-        except Exception:  # noqa: BLE001 -- keep whatever the cache had
-            continue
-        record = parse_ariva(
-            html_text, symbol, as_of=today, symbol_lookup=symbol_lookup, fetched_on=today)
-        if record.kind == "unknown" and cached:
-            continue
-        cache[symbol] = record.to_dict()
-        changed = True
+        record = dict(cached) if cached else None
+        if force or not cached or not _fresh(cached, max_age_days, today):
+            try:
+                html_text = fetch(symbol)
+            except Exception:  # noqa: BLE001 -- keep whatever the cache had
+                html_text = None
+            if html_text:
+                fresh_record = parse_ariva(
+                    html_text, symbol, as_of=today, symbol_lookup=symbol_lookup,
+                    fetched_on=today)
+                if fresh_record.kind != "unknown" or not cached:
+                    fresh = fresh_record.to_dict()
+                    for field in ("fund_symbol", "holdings", "holdings_coverage",
+                                  "holdings_as_of"):
+                        if fresh.get(field) is None and (cached or {}).get(field) is not None:
+                            fresh[field] = cached[field]
+                    record = fresh
+                    changed = True
+        # A fund's basket is enriched separately: it changes on its own schedule
+        # and a page refresh must not wipe weights it did not provide.
+        if (record and record.get("kind") in {"etf", "fund"} and not record.get("holdings")
+                and holdings_lookup is not None):
+            info = None
+            try:
+                info = holdings_lookup(record.get("name") or symbol)
+            except Exception:  # noqa: BLE001 -- a holdings miss is not an error
+                info = None
+            if info and info.get("holdings"):
+                record = {**record,
+                          "fund_symbol": info.get("symbol"),
+                          "holdings": info["holdings"],
+                          "holdings_coverage": info.get("coverage"),
+                          "holdings_as_of": info.get("as_of")}
+                changed = True
+        if record:
+            cache[symbol] = record
     if changed and write:
         try:
             save_cache(cache, cache_path)

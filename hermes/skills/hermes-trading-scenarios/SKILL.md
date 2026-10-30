@@ -1,7 +1,7 @@
 ---
 name: hermes-trading-scenarios
 description: Use for TradingAgents analysis and generic workflow fixes.
-version: 1.0.25
+version: 1.0.26
 author: Jan Homoth
 license: MIT
 platforms: [linux, macos, windows]

@@ -28,6 +28,10 @@ class Position(BaseModel):
         default=None,
         description="Current market value in the account currency, as the broker states it",
     )
+    acquired_on: str | None = Field(
+        default=None,
+        description="Date the position was opened (ISO); a daily-reset note's risk depends on it",
+    )
 
 
 class PortfolioContext(BaseModel):

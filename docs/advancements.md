@@ -98,6 +98,53 @@ log format, CLI subcommand).
 
 ---
 
+## [Fork v1.0.15] — 2026-10-30
+
+### Added — look-through, FX, option deltas and a named reset horizon
+
+v1.0.14 could only value what it could see: a fund was its market value, a
+foreign-currency exposure was flagged and dropped, an option had no greeks, and
+a daily-leveraged note was a warning without a horizon. Each of those is now
+modelled, with the data it needs and a stated limit where the data runs out.
+
+- **Fund look-through.** A fund's published top holdings are resolved through
+  the data layer (`dataflows/vendors/yahoo/funds.py`) and stored on the
+  instrument record (`holdings`, `holdings_coverage`, `holdings_as_of`). Each
+  constituent contribution lands in **its own** underlying group, marked
+  `lookthrough: true` with `via: ["A40Y9K"]`, so a Rheinmetall holding inside a
+  defence ETF adds to a Rheinmetall turbo instead of hiding in the basket.
+  Live: the Defence ETF explains 83.9 % of net assets; RHM.DE moves from
+  31 970 € (10.3 %) to **62 715 € (20.2 %)** and the position cap falls to 0.
+- **Currency.** `tradingagents/fx.py` resolves `BASEQUOTE=X` from the price
+  vendor, stamps `as_of`, caches at `~/.tradingagents/fx.json` and inverts the
+  opposite pair when that is all there is. Exposures convert into the book
+  currency with the rate recorded on the row (`fx`); a missing rate stays
+  `fx_missing` and is not netted — no rate is assumed to be 1.0.
+- **Options.** `tradingagents/options.py` parses an OCC symbol, reads spot and
+  volatility from the chain (data layer), and computes a Black-Scholes delta;
+  exposure is `units × multiplier × delta × spot`, so a put is negative and the
+  premium is not the exposure. Vendors publish `0.0` volatility for thin
+  contracts, so the premium is inverted by bisection
+  (`iv_source: derived_from_price`) — live ORCL Nov-20 140 call: IV 0.566,
+  delta 0.518. No usable volatility and no price means `unknown`, not a guess.
+- **Daily-reset notes.** The exposure stays `market value × leverage` (exact for
+  one session); the new `leverage_reset` warning names the reset and, when the
+  book carries `acquired_on`, the holding period — instead of an invented drag
+  number.
+- **Before the run.** The wrapper resolves instruments (including baskets) and
+  FX for the book in `refresh_book()`, used by `run` and `doctor`; the graph
+  reads only the caches. `doctor` adds `portfolio_fx`.
+- **Wrapper 2.8.0**, `PortfolioContext.Position.acquired_on`, and the report's
+  exposure table gains the look-through rows.
+
+Changed: a book with funds, options or foreign currency now sizes against a
+larger (and correct) exposure — runs that previously produced `EXECUTE` may now
+return `NO_TRADE` because the position cap is already consumed.
+
+Tests: `tests/test_fx.py` (8), `tests/test_options.py` (13), plus additions to
+the instrument, advisory, portfolio and report suites; layering test enforces
+that `yfinance` stays in the data layer. Full suite 1825 passed, 1 skipped.
+
 ## [Fork v1.0.14] — 2026-10-30
 
 ### Added — instrument metadata, exposure and a concentration check

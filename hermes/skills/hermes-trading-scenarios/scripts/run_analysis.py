@@ -84,7 +84,7 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.7.0"
+WRAPPER_VERSION = "2.8.0"
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -975,6 +975,34 @@ def _writable_dir(path: Path) -> tuple[bool, str]:
     return os.access(probe, os.W_OK), str(probe)
 
 
+def refresh_book(book: dict) -> dict:
+    """Resolve the book's instruments and FX pairs before a run or a doctor call.
+
+    The graph itself never touches the network for this: it reads the caches
+    filled here. Failures stay in the summary -- a stale cache is not fatal.
+    """
+    summary: dict = {"instruments": 0, "pairs": [], "error": None}
+    try:
+        from tradingagents import fx as _fx
+        from tradingagents import instruments as _instruments
+
+        keys = [str(p.get("ticker")) for p in book.get("positions") or [] if p.get("ticker")]
+        _instruments.resolve(keys, symbol_lookup=_instruments.yahoo_symbol,
+                             holdings_lookup=_instruments.fund_holdings)
+        meta = _instruments.for_book(book)
+        summary["instruments"] = len(meta)
+        currencies = [m.get("underlying_currency") for m in meta.values()
+                      if m.get("underlying_currency")]
+        pairs = _fx.needed_pairs(currencies, book.get("currency"))
+        summary["currencies"] = currencies
+        summary["pairs"] = ["".join(pair) for pair in pairs]
+        if pairs:
+            _fx.refresh(currencies, book.get("currency"))
+    except Exception as exc:  # noqa: BLE001 -- the doctor reports, it does not fail
+        summary["error"] = f"{type(exc).__name__}: {exc}"[:120]
+    return summary
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     """`doctor [TICKER]`: pre-flight for unattended runs. Exit 0/3/4."""
     if getattr(args, "allow_copilot", False):
@@ -1054,6 +1082,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                       f"equity {equity:,.2f} {book.get('currency') or ''}".strip())
             # A derivative's exposure needs its ratio from the instrument cache;
             # knowing that before the run is cheaper than a blocked plan after.
+            book_summary = refresh_book(book)
             try:
                 from tradingagents import instruments as _instruments
 
@@ -1068,6 +1097,21 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     check("portfolio_instruments", "ok", f"{len(held)} instrument(s) resolved")
             except Exception as exc:  # noqa: BLE001 -- the doctor must not crash
                 check("portfolio_instruments", "degraded", f"{type(exc).__name__}: {exc}"[:120])
+            # Foreign-currency exposure is only comparable with a stamped rate.
+            if book_summary.get("error"):
+                check("portfolio_fx", "degraded", f"refresh failed: {book_summary['error']}")
+            elif book_summary.get("pairs"):
+                try:
+                    from tradingagents import fx as _fx
+
+                    rates = _fx.cached_rates(book_summary.get("currencies") or [],
+                                             book.get("currency"))
+                    missing = [pair for pair in book_summary["pairs"] if pair not in rates]
+                    check("portfolio_fx", "degraded" if missing else "ok",
+                          ("no rate for " + ", ".join(missing)) if missing
+                          else f"{len(rates)} pair(s) cached")
+                except Exception as exc:  # noqa: BLE001
+                    check("portfolio_fx", "degraded", f"{type(exc).__name__}: {exc}"[:120])
     if getattr(args, "supplement", None):
         try:
             supplement(args.supplement)
@@ -1258,6 +1302,18 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     ticker = args.ticker  # uppercased + validated by type=ticker
     date = args.date or dt.date.today().isoformat()
+
+    # The graph reads the caches, never the network: fill them before the child
+    # starts, so an exposure is computed from this run's term sheets and rates.
+    if getattr(args, "portfolio", None):
+        try:
+            book = json.loads(Path(args.portfolio).expanduser().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            book = None
+        if isinstance(book, dict):
+            summary = refresh_book(book)
+            if summary.get("error"):
+                print(f">> Buchdaten: {summary['error']}", file=sys.stderr)
 
     # --- LLM flag validation (ta.sh messages, now in one place) --------------
     if bool(args.api_url) != bool(args.model):

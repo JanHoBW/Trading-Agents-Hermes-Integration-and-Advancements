@@ -330,7 +330,7 @@ def test_an_unresolved_instrument_stays_unknown():
 
 
 @pytest.mark.unit
-def test_a_foreign_currency_exposure_is_not_netted_silently():
+def test_a_foreign_currency_exposure_is_not_netted_without_a_rate():
     book = {**BIG, "positions": [{"ticker": "FG40N8", "quantity": 441, "market_value": 1217.16}]}
     oracle = {"FG40N8": {"kind": "knock_out", "underlying": "ORCL", "ratio": 0.1,
                          "underlying_price": 139.56, "underlying_currency": "USD",
@@ -338,6 +338,23 @@ def test_a_foreign_currency_exposure_is_not_netted_silently():
     p = plan(ticker="ORCL", account=book, instruments=oracle)
     assert p["exposure"]["rows"][0]["status"] == "fx_missing"
     assert _check(p, "exposure_currency")["passed"] is False
+
+
+@pytest.mark.unit
+def test_a_stamped_rate_converts_the_exposure_into_the_book_currency():
+    book = {**BIG, "positions": [{"ticker": "FG40N8", "quantity": 441, "market_value": 1217.16}]}
+    oracle = {"FG40N8": {"kind": "knock_out", "underlying": "ORCL", "ratio": 0.1,
+                         "underlying_price": 139.56, "underlying_currency": "USD",
+                         "direction": "short"}}
+    rates = {"USDEUR": {"pair": "USDEUR", "base": "USD", "quote": "EUR", "rate": 0.89,
+                        "as_of": "2026-10-30", "source": "yahoo/USDEUR=X"}}
+    p = plan(ticker="ORCL", account=book, instruments=oracle, fx_rates=rates)
+    row = p["exposure"]["rows"][0]
+    assert row["status"] == "ok"
+    assert row["exposure_native"] == pytest.approx(-6_154.6, abs=0.1)
+    assert row["exposure"] == pytest.approx(-6_154.6 * 0.89, abs=0.5)
+    assert row["fx"]["pair"] == "USDEUR" and row["fx"]["as_of"] == "2026-10-30"
+    assert p["exposure"]["by_underlying"]["ORCL"]["currency"] == "EUR"
 
 
 @pytest.mark.unit
@@ -352,3 +369,76 @@ def test_a_concentrated_book_is_flagged_without_blocking():
     assert _check(p, "concentration")["passed"] is False
     assert _check(p, "concentration")["blocking"] is False
     assert p["verdict"] == "EXECUTE", "a concentrated book is a warning, not a verdict"
+
+
+@pytest.mark.unit
+def test_a_fund_hands_its_constituents_to_their_own_group():
+    book = {**BIG, "positions": [{"ticker": "A40Y9K", "quantity": 8171.8, "market_value": 262_151.34}]}
+    fund = {"A40Y9K": {"kind": "etf", "name": "WisdomTree Europe Defence UCITS ETF",
+                       "holdings": [{"symbol": "RHM.DE", "name": "Rheinmetall AG", "weight": 0.05}],
+                       "holdings_coverage": 0.62, "holdings_as_of": "2026-10-30"}}
+    p = plan(ticker="RHM.DE", account=book, instruments=fund,
+             proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0})
+    groups = p["exposure"]["by_underlying"]
+    assert groups["RHM.DE"]["net"] == pytest.approx(13_107.57, abs=0.01)
+    assert groups["RHM.DE"]["lookthrough"] is True
+    assert groups["RHM.DE"]["via"] == ["A40Y9K"]
+    assert p["exposure"]["rows"][0]["coverage"] == 0.62
+
+
+@pytest.mark.unit
+def test_a_fund_holding_and_a_turbo_add_up_in_the_same_underlying():
+    book = {**BIG, "positions": [
+        {"ticker": "A40Y9K", "quantity": 8171.8, "market_value": 262_151.34},
+        {"ticker": "MK0L4Q", "quantity": 305, "market_value": 6234.46},
+    ]}
+    meta = {"A40Y9K": {"kind": "etf", "holdings": [
+                {"symbol": "RHM.DE", "weight": 0.05}], "holdings_coverage": 0.62},
+            "MK0L4Q": {"kind": "knock_out", "underlying": "RHM.DE", "ratio": 0.1,
+                       "underlying_price": 1048.2, "underlying_currency": "EUR",
+                       "direction": "long"}}
+    p = plan(ticker="RHM.DE", account=book, instruments=meta,
+             proposal={"action": "Buy", "entry_price": 1000.0, "stop_loss": 950.0})
+    group = p["exposure"]["by_underlying"]["RHM.DE"]
+    assert group["net"] == pytest.approx(13_107.57 + 31_970.1, abs=0.1)
+    # 45 000 caps it: 44 950 of exposure leaves no room for another unit.
+    assert p["caps"]["by_position"] == 0
+
+
+@pytest.mark.unit
+def test_an_option_is_delta_adjusted_exposure():
+    book = {**BIG, "positions": [{"ticker": "ORCL261218C00140000", "quantity": 2,
+                                  "market_value": 1_200.0}]}
+    option = {"ORCL261218C00140000": {
+        "kind": "option", "underlying": "ORCL", "underlying_price": 140.0,
+        "underlying_currency": "EUR", "delta": 0.53, "multiplier": 100.0,
+        "option_type": "call"}}
+    p = plan(ticker="ORCL", account=book, instruments=option)
+    row = p["exposure"]["rows"][0]
+    assert row["exposure"] == pytest.approx(2 * 100 * 0.53 * 140.0, abs=0.01)
+    assert row["delta"] == 0.53 and row["multiplier"] == 100.0
+
+
+@pytest.mark.unit
+def test_an_option_without_a_delta_is_unknown_not_the_premium():
+    book = {**BIG, "positions": [{"ticker": "ORCL261218C00140000", "quantity": 2,
+                                  "market_value": 1_200.0}]}
+    option = {"ORCL261218C00140000": {"kind": "option", "underlying": "ORCL",
+                                      "underlying_price": 140.0, "delta": None}}
+    p = plan(ticker="ORCL", account=book, instruments=option)
+    row = p["exposure"]["rows"][0]
+    assert row["status"] == "unknown" and row["exposure"] is None
+
+
+@pytest.mark.unit
+def test_a_daily_reset_note_names_its_horizon_instead_of_a_drag_number():
+    book = {**BIG, "positions": [{"ticker": "A0V6ZV", "quantity": 792,
+                                  "market_value": 2005.34,
+                                  "acquired_on": "2026-08-01"}]}
+    note = {"A0V6ZV": {"kind": "etc", "leverage": 2.0, "reset": "daily"}}
+    p = plan(ticker="A0V6ZV", account=book, instruments=note)
+    row = p["exposure"]["rows"][0]
+    assert row["held_days"] == 90
+    check = _check(p, "leverage_reset")
+    assert check["passed"] is False and check["blocking"] is False
+    assert "2x daily" in check["detail"] and "held 90 day(s)" in check["detail"]

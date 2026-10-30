@@ -172,3 +172,50 @@ def test_for_book_only_returns_held_instruments(tmp_path):
     book = {"positions": [{"ticker": "MK0L4Q", "quantity": 305}, {"ticker": "RHM.DE", "quantity": 4}]}
     records = instruments.for_book(book, cache_path=cache)
     assert set(records) == {"MK0L4Q"}
+
+
+FUND_HOLDINGS = {
+    "symbol": "EUDF.DE", "as_of": "2026-10-30", "coverage": 0.62,
+    "holdings": [{"symbol": "RHM.DE", "name": "Rheinmetall AG", "weight": 0.05},
+                 {"symbol": "SIE.DE", "name": "Siemens AG", "weight": 0.1}],
+}
+
+
+@pytest.mark.unit
+def test_a_fund_is_enriched_with_its_top_holdings(tmp_path):
+    cache = tmp_path / "instruments.json"
+    records = instruments.resolve(["A40Y9K"], cache_path=cache, fetch=lambda key: ETF,
+                                  today="2026-10-30",
+                                  holdings_lookup=lambda name: FUND_HOLDINGS)
+    record = records["A40Y9K"]
+    assert record["fund_symbol"] == "EUDF.DE"
+    assert record["holdings_coverage"] == 0.62
+    assert record["holdings"][0]["symbol"] == "RHM.DE"
+
+
+@pytest.mark.unit
+def test_a_page_refresh_keeps_the_basket_it_did_not_provide(tmp_path):
+    cache = tmp_path / "instruments.json"
+    instruments.resolve(["A40Y9K"], cache_path=cache, fetch=lambda key: ETF,
+                        today="2026-10-30", holdings_lookup=lambda name: FUND_HOLDINGS)
+    refreshed = instruments.resolve(["A40Y9K"], cache_path=cache, fetch=lambda key: ETF,
+                                    today="2026-10-30", force=True)
+    assert refreshed["A40Y9K"]["holdings"][0]["symbol"] == "RHM.DE"
+    assert refreshed["A40Y9K"]["holdings_coverage"] == 0.62
+
+
+OPTION = {"key": "ORCL261218C00140000", "kind": "option", "underlying": "ORCL",
+          "underlying_price": 140.0, "underlying_currency": "USD", "option_type": "call",
+          "delta": 0.53, "multiplier": 100.0, "source": "yahoo/ORCL/option_chain"}
+
+
+@pytest.mark.unit
+def test_an_option_symbol_resolves_through_the_chain_not_the_term_sheet(tmp_path, monkeypatch):
+    cache = tmp_path / "instruments.json"
+    monkeypatch.setattr("tradingagents.options.resolve_option",
+                        lambda symbol, as_of: {**OPTION, "key": symbol, "as_of": as_of})
+    records = instruments.resolve(["ORCL261218C00140000"], cache_path=cache,
+                                  fetch=lambda key: (_ for _ in ()).throw(AssertionError("no page fetch")),
+                                  today="2026-10-30")
+    assert records["ORCL261218C00140000"]["kind"] == "option"
+    assert records["ORCL261218C00140000"]["delta"] == 0.53

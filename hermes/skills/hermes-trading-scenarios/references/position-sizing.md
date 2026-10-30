@@ -142,15 +142,55 @@ does not offset a long entry, and a foreign-currency exposure is flagged
 `doctor TICKER --portfolio=FILE` adds `portfolio_instruments`, naming any booked
 WKN without a term-sheet record.
 
-### Known limits
+### Baskets: look-through with a stated coverage
 
-- **ETF look-through** needs the issuer's daily weights. Without them the
-  constituents inside a sector ETF stay unmodelled — the report says so rather
-  than estimating a Rheinmetall share of a defence basket.
-- **Daily-leveraged notes** are path-dependent; the model stores the leverage
-  and a warning, not a constant delta.
-- **Options** would need greeks; only the linear knock-out is modelled.
-- **Currency**: exposures are compared only within one currency.
+An ETF is a basket, so its stated top holdings are split out and each
+constituent counts against **its own** underlying. The record carries
+`holdings` (symbol, name, weight), `holdings_coverage` and `holdings_as_of`; the
+group then shows `lookthrough: true` and `via: ["A40Y9K"]`, so a Rheinmetall
+position inside a defence ETF adds to the Rheinmetall exposure from a turbo:
+
+```
+RHM.DE   62 715 EUR   20.2 %   lookthrough, via A40Y9K      -> over cap
+```
+
+Vendor coverage is the top of the book (here 83.9 % of net assets); the rest
+stays unmodelled and is never spread evenly over the missing names. A refresh
+of the security page keeps the basket it did not provide.
+
+### Options: delta, and an IV that is not taken on faith
+
+A listed option resolves from its OCC symbol (`ORCL261120C00140000`) through the
+chain: spot, implied volatility, multiplier 100, and a Black-Scholes delta.
+Exposure is `units × multiplier × delta × spot` — a put carries a negative
+exposure, and the premium is never mistaken for it.
+
+Vendors publish `0.0` volatility for thin contracts. Then the premium inverts
+into a volatility by bisection (`iv_source: derived_from_price`); if neither a
+usable volatility nor a price exists, the position stays `unknown`.
+
+### Currency: a stamped rate or nothing
+
+A foreign-currency exposure is converted with the pair the FX cache holds
+(`~/.tradingagents/fx.json`, `USDEUR=X`), stamped `as_of` on the row. The inverse
+pair is used when only it is quoted. Without any rate the row is `fx_missing`
+and the position is **not** netted: no rate is ever assumed to be 1.0.
+
+`doctor` refreshes instruments and rates for the book before a run
+(`portfolio_instruments`, `portfolio_fx`); the graph itself reads only the
+caches.
+
+### What remains unmodelled
+
+- **Gamma and vega.** Delta is a first-order number; it moves with the
+  underlying, and nothing here re-prices an option after a move.
+- **Unlisted pools** (funds without a published basket) stay at their market
+  value, labelled as such.
+- **Third currencies.** A missing direct or inverse pair is reported, not
+  bridged through a cross rate.
+- **Reset drag.** A daily-leveraged note's exposure is exact for one session;
+  the check names the reset and the holding period instead of inventing a drag
+  number.
 
 ## What it deliberately does not do
 
