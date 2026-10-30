@@ -38,6 +38,14 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_EVENT_LOOKBACK_DAYS":      "event_context_lookback_days",
     "TRADINGAGENTS_EVENT_CONTEXT":            "event_context_enabled",
     "TRADINGAGENTS_RESULTS_LAYOUT":           "results_layout",
+    # Deterministic position sizing (tradingagents/advisory.py). Flat scalars on
+    # purpose: a nested block cannot be coerced by this overlay.
+    "TRADINGAGENTS_RISK_PER_TRADE_PCT":       "risk_per_trade_pct",
+    "TRADINGAGENTS_MAX_POSITION_PCT":         "max_position_pct",
+    "TRADINGAGENTS_MIN_REWARD_RISK":          "min_reward_risk",
+    "TRADINGAGENTS_STOP_ATR_MULTIPLE":        "stop_atr_multiple",
+    "TRADINGAGENTS_MIN_STOP_PCT":             "min_stop_pct",
+    "TRADINGAGENTS_MAX_ADV_PCT":              "max_adv_participation_pct",
 }
 
 
@@ -167,6 +175,15 @@ def build_default_config() -> dict:
         "max_debate_rounds": 1,
         "max_risk_discuss_rounds": 1,
         "max_recur_limit": 100,
+        # Deterministic position sizing (tradingagents/advisory.py). The
+        # per-account fields in the portfolio JSON win over these; they are the
+        # house policy the sizing applies when the book carries none.
+        "risk_per_trade_pct": 1.0,        # max loss per trade, % of equity
+        "max_position_pct": 15.0,         # max single-position notional, % of equity
+        "min_reward_risk": 1.5,           # warning threshold for target-based R/R
+        "stop_atr_multiple": 2.0,         # only used when the Trader gave no stop
+        "min_stop_pct": 0.2,              # a stop tighter than this is not a stop
+        "max_adv_participation_pct": 1.0,  # % of the 20-day average traded value
         # Rounds of tool calls an analyst may make before it is asked for its report.
         "max_tool_rounds": 20,
         # News / data fetching parameters
