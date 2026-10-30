@@ -215,6 +215,13 @@ def build_advisory(
     if is_exit:
         check("exit_plan", True,
               f"closing {_floor(abs(held))} unit(s) of the held position", blocking=False)
+        # A stop is not a rule for a close, but a level the Trader stated is
+        # still reported with its distance instead of a bare number.
+        if entry is not None and stop is not None:
+            risk_per_share = abs(entry - stop)
+            stop_pct = risk_per_share / entry * 100
+            if atr is not None:
+                atr_multiple = risk_per_share / atr
     elif entry is not None and stop is not None:
         risk_per_share = abs(entry - stop)
         stop_pct = risk_per_share / entry * 100

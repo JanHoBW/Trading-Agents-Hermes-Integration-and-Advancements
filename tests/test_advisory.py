@@ -162,6 +162,12 @@ def test_a_sell_against_a_held_long_is_an_exit_not_a_new_short():
     assert p["verdict"] == "EXECUTE"
     # Closing needs no stop, so no stop check is raised against the exit.
     assert not any(c["name"] == "stop_loss" for c in p["checks"])
+    # A stated stop is reported with its distance, not as a bare number.
+    with_stop = plan(rating="Sell", proposal={"action": "Sell", "entry_price": 100.0,
+                                              "stop_loss": 110.0},
+                     account={**ACCOUNT, "positions": [{"ticker": "X.DE", "quantity": 10}]})
+    assert with_stop["levels"]["stop_pct"] == 10.0
+    assert with_stop["levels"]["atr_multiple"] == 2.0
 
 
 @pytest.mark.unit
