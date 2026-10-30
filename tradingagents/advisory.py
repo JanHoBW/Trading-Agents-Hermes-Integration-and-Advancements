@@ -112,6 +112,26 @@ def _days_between(start: Any, end: Any) -> int | None:
         return None
 
 
+def _exposure_symbol(row: Mapping[str, Any], position: Mapping[str, Any],
+                     meta: Mapping[str, Any]) -> str:
+    """The symbol a booked line's exposure belongs to for netting.
+
+    A derivative belongs to its contractual underlying. A fund belongs to the
+    tradable fund symbol (a depot WKN is not what the analysis runs on), and a
+    line booked under a different venue/ADR symbol can name its analysis symbol
+    explicitly. Without either, the booked key stays the grouping key.
+    """
+    kind = str(row.get("kind") or "")
+    if kind in {"knock_out", "option"} and row.get("underlying"):
+        return str(row["underlying"]).upper()
+    override = str(position.get("analysis_ticker") or "").strip().upper()
+    if override:
+        return override
+    if kind in {"etf", "fund"} and meta.get("fund_symbol"):
+        return str(meta["fund_symbol"]).strip().upper()
+    return str(row.get("underlying") or row["key"]).upper()
+
+
 def book_exposure(
     account: Mapping[str, Any] | None,
     instruments: Mapping[str, Mapping[str, Any]] | None,
@@ -221,7 +241,10 @@ def book_exposure(
 
     groups: dict[str, list[dict]] = {}
     for row in rows:
-        name = row["underlying"] or row["key"]
+        position = next((p for p in account.get("positions") or []
+                         if str(p.get("ticker") or "").strip().upper() == row["key"]), {})
+        meta = dict(instruments.get(row["key"]) or {})
+        name = _exposure_symbol(row, position, meta)
         groups.setdefault(name, []).append(row)
 
     # Baskets contribute to their constituents' groups. Both views are kept:

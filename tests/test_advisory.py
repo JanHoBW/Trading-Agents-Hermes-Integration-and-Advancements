@@ -431,6 +431,39 @@ def test_an_option_without_a_delta_is_unknown_not_the_premium():
 
 
 @pytest.mark.unit
+def test_a_fund_is_netted_under_its_tradable_symbol():
+    # Depot WKN A40Y9K is analyzed as EUDF.DE; a run on EUDF.DE must see the
+    # holding instead of sizing a fresh position (or a short) next to it.
+    book = {**ACCOUNT, "equity": 100_000.0, "positions": [
+        {"ticker": "A40Y9K", "quantity": 400.0, "market_value": 40_000.0,
+         "analysis_ticker": "EUDF.DE"}]}
+    fund = {"A40Y9K": {"kind": "etf", "name": "WisdomTree Europe Defence",
+                       "fund_symbol": "EUDF.DE"}}
+    p = plan(ticker="EUDF.DE", account=book, instruments=fund,
+             proposal={"action": "Buy", "entry_price": 100.0, "stop_loss": 95.0})
+    groups = p["exposure"]["by_underlying"]
+    assert groups["EUDF.DE"]["net"] == pytest.approx(40_000.0)
+    assert "A40Y9K" not in groups
+    assert p["caps"]["by_position"] == 0
+    assert p["verdict"] == "NO_TRADE"
+
+
+@pytest.mark.unit
+def test_a_venue_override_maps_an_adr_line_to_the_analysis_symbol():
+    book = {**ACCOUNT, "equity": 100_000.0, "positions": [
+        {"ticker": "A420WD", "quantity": 133.0, "market_value": 17_035.0,
+         "analysis_ticker": "ENR.DE"}]}
+    meta = {"A420WD": {"kind": "share", "underlying": "SMERY",
+                       "name": "Siemens Energy"}}
+    p = plan(ticker="ENR.DE", account=book, instruments=meta,
+             proposal={"action": "Buy", "entry_price": 100.0, "stop_loss": 95.0})
+    groups = p["exposure"]["by_underlying"]
+    assert groups["ENR.DE"]["net"] == pytest.approx(17_035.0)
+    assert groups["ENR.DE"]["keys"] == ["A420WD"]
+    assert "SMERY" not in groups
+
+
+@pytest.mark.unit
 def test_a_daily_reset_note_names_its_horizon_instead_of_a_drag_number():
     book = {**BIG, "positions": [{"ticker": "A0V6ZV", "quantity": 792,
                                   "market_value": 2005.34,

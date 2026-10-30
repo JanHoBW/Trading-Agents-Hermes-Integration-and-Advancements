@@ -139,6 +139,21 @@ unit-equivalents, so `by_position` falls from 45 to 14 units. A short derivative
 does not offset a long entry, and a foreign-currency exposure is flagged
 (`exposure_currency`) instead of being converted at a rate nobody verified.
 
+Netting uses the **analysis symbol**, not the depot key. A fund is grouped under
+its tradable symbol (`fund_symbol` in the instrument cache — WKN `A40Y9K` is
+analyzed as `EUDF.DE`), and a line booked under an ADR or another venue can name
+`analysis_ticker` on the position:
+
+```json
+{"ticker": "A420WD", "quantity": 125, "market_value": 17035.0, "analysis_ticker": "ENR.DE"}
+```
+
+Without the mapping the book appears not to hold the analyzed name at all: a run
+on `EUDF.DE` saw `existing_units_equivalent 0` and sized a 15 % *short* beside an
+84.6 % long, and a run on `ENR.DE` missed the 5.5 % Siemens Energy line. Both are
+now netted, and `position_in()` prints the position in the decision prompt. A
+derivative keeps its contractual underlying; the mapping never overrides it.
+
 `doctor TICKER --portfolio=FILE` adds `portfolio_instruments`, naming any booked
 WKN without a term-sheet record.
 

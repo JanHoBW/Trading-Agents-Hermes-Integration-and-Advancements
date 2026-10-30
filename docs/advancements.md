@@ -131,6 +131,14 @@ modelled, with the data it needs and a stated limit where the data runs out.
   one session); the new `leverage_reset` warning names the reset and, when the
   book carries `acquired_on`, the holding period — instead of an invented drag
   number.
+- **Identity for netting.** A booked line is grouped under the symbol the
+  analysis actually runs on, not the depot key: a fund under its tradable
+  symbol (`fund_symbol`, e.g. WKN `A40Y9K` → `EUDF.DE`), and a line whose venue
+  or ADR symbol differs can name `analysis_ticker` on the position
+  (`A420WD`/`SMERY` → `ENR.DE`). `PortfolioContext.position_in()` follows the
+  same mapping, so the decision prompt says "Current position in EUDF.DE" and
+  the position cap nets the real 84.6 % holding instead of sizing a fresh
+  (or short) position beside it. Derivatives keep their contractual underlying.
 - **Before the run.** The wrapper resolves instruments (including baskets) and
   FX for the book in `refresh_book()`, used by `run` and `doctor`; the graph
   reads only the caches. `doctor` adds `portfolio_fx`.
@@ -143,7 +151,7 @@ return `NO_TRADE` because the position cap is already consumed.
 
 Tests: `tests/test_fx.py` (8), `tests/test_options.py` (13), plus additions to
 the instrument, advisory, portfolio and report suites; layering test enforces
-that `yfinance` stays in the data layer. Full suite 1825 passed, 1 skipped.
+that `yfinance` stays in the data layer. Full suite 1827 passed, 1 skipped.
 
 ## [Fork v1.0.14] — 2026-10-30
 

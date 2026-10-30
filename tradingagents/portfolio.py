@@ -32,6 +32,13 @@ class Position(BaseModel):
         default=None,
         description="Date the position was opened (ISO); a daily-reset note's risk depends on it",
     )
+    analysis_ticker: str | None = Field(
+        default=None,
+        description=(
+            "Symbol this line is analyzed and sized under when it differs from the booked "
+            "one (depot WKN, ADR line); exposure is grouped and netted under it"
+        ),
+    )
 
 
 class PortfolioContext(BaseModel):
@@ -52,7 +59,10 @@ class PortfolioContext(BaseModel):
     positions: list[Position] = Field(default_factory=list)
 
     def position_in(self, ticker: str) -> Position | None:
-        return next((p for p in self.positions if p.ticker.upper() == ticker.strip().upper()), None)
+        symbol = ticker.strip().upper()
+        return next((p for p in self.positions
+                     if p.ticker.upper() == symbol
+                     or (p.analysis_ticker or "").strip().upper() == symbol), None)
 
     def render(self, ticker: str) -> str:
         """The portfolio block for the decision agents, led by the analyzed instrument."""

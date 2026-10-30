@@ -113,6 +113,21 @@ tickers:
     reddit:
       queries: [Siemens Energy]
       subreddits: [wallstreetbetsGER, Aktien]
+  # Portfolio-Bestand A40Y9K (WisdomTree Europe Defence). ISIN verifiziert am
+  # 2026-10-30 über WisdomTree-Produktseite + justETF (WKN A40Y9K, Xetra EUDF).
+  # ETF-Profil und Top-10-Holdings kommen aus den Yahoo-Funds-Daten.
+  EUDF.DE:
+    names: [WisdomTree Europe Defence, Europe Defence ETF]
+    isin: IE0002Y8CX98
+    sector: defense
+    reddit:
+      queries: [WisdomTree Europe Defence, Europe Defence ETF]
+  # US-Titel: ISIN bewusst nicht eingetragen (nicht gegen DPA-Feed-Tag geprüft).
+  ORCL:
+    names: [Oracle, Oracle Corporation]
+    sector: technology
+    reddit:
+      queries: [Oracle, ORCL]
 
   # Weitere Defense-Titel: gleicher Sektor-Kontext (Fachquellen + Keywords).
   # Ticker über Yahoo/OpenFIGI verifiziert (2026-10-22), ISIN bewusst NICHT
