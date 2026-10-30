@@ -101,6 +101,37 @@ def test_create_run_state_renders_the_portfolio_once(tmp_path):
 
 
 @pytest.mark.unit
+def test_the_book_reaches_the_initial_state():
+    """Sizing needs the book as data, not only as a rendered prompt string."""
+    from tradingagents.graph.propagation import Propagator
+
+    book = {"equity": 25000.0, "cash": 5000.0, "currency": "EUR", "positions": []}
+    state = Propagator().create_initial_state("X.DE", "2026-10-30", portfolio_account=book)
+    assert state["portfolio_account"] == book
+
+
+@pytest.mark.unit
+def test_without_a_book_the_state_says_so():
+    from tradingagents.graph.propagation import Propagator
+
+    state = Propagator().create_initial_state("X.DE", "2026-10-30")
+    assert state["portfolio_account"] == {}
+    # The sizing slots exist from the start so every consumer can .get() them.
+    for key in ("trader_proposal", "market_levels", "advisory"):
+        assert state[key] == {}
+    assert state["final_price_target"] is None
+
+
+@pytest.mark.unit
+def test_create_run_state_serialises_the_book(tmp_path):
+    graph = _bare_graph(tmp_path)
+    book = PortfolioContext.model_validate({**HOLDING, "equity": 30000.0})
+    state = graph.create_run_state("AAPL", "2026-08-14", portfolio=book)
+    assert state["portfolio_account"]["equity"] == 30000.0
+    assert state["portfolio_account"]["positions"][0]["ticker"] == "AAPL"
+
+
+@pytest.mark.unit
 def test_checkpoint_signature_changes_with_the_portfolio(tmp_path):
     graph = _bare_graph(tmp_path)
     none = graph._run_signature("stock")

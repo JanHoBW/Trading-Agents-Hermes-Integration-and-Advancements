@@ -18,6 +18,7 @@ class Propagator:
         past_context: str = "",
         instrument_context: str = "",
         portfolio_context: str = "",
+        portfolio_account: dict | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -36,6 +37,13 @@ class Propagator:
             "past_context": past_context,
             "memory_note": "",
             "portfolio_context": portfolio_context,
+            # The book as data (deterministic sizing reads it); the rendered
+            # string above is what the agents see.
+            "portfolio_account": portfolio_account or {},
+            "trader_proposal": {},
+            "final_price_target": None,
+            "market_levels": {},
+            "advisory": {},
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",

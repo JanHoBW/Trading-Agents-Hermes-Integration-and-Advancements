@@ -72,3 +72,8 @@ class AgentState(MessagesState):
     memory_note: Annotated[str, "What the Memory Log step could not settle or read this run, for the report; empty when all went well"]
     data_coverage: Annotated[dict, "Per-run data-coverage record (methods served, vendors skipped and why), written by the Portfolio Manager from the routing layer's own records"]
     portfolio_context: Annotated[str, "Caller-supplied holdings and cash, rendered at run start; empty when not provided"]
+    portfolio_account: Annotated[dict, "The same book as data (equity, cash, policy, positions); empty when not provided"]
+    trader_proposal: Annotated[dict, "The Trader's structured proposal (action/entry/stop); empty on the free-text fallback"]
+    final_price_target: Annotated[float | None, "The PM's structured price target; None when absent or free-text"]
+    market_levels: Annotated[dict, "Verified close/ATR/ADV at the analysis date; available=False when the load failed"]
+    advisory: Annotated[dict, "Deterministic sizing plan and discipline record, computed in save_reports"]
