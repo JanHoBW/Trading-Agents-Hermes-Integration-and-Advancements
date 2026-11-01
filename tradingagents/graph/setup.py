@@ -21,6 +21,7 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.analysts.turn import WRAP_UP
+from tradingagents.agents.context import wrap_untrusted
 from tradingagents.agents.state import AgentState
 
 from .analyst_execution import build_analyst_execution_plan
@@ -64,8 +65,6 @@ def _untrusted_tool_node(tools):
     handling, one ToolMessage per call); only the message text is rewritten.
     """
     from langchain_core.messages import ToolMessage
-
-    from tradingagents.agents.context import wrap_untrusted
 
     node = ToolNode(list(tools))
 

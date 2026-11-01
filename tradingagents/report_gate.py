@@ -22,6 +22,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tradingagents.dataflows import coverage
+
 GATE_FILENAME = "quality_gate.json"
 
 #: The PM must commit to exactly one of these (see the portfolio manager prompt).
@@ -191,10 +193,8 @@ def run_quality_gate(report_dir) -> dict:
     # Source quality: a directional call carried only by social or aggregator
     # content is a different claim from one backed by a filing or the issuer.
     # Read from the routing layer's records, never from the prose.
-    from tradingagents.dataflows import coverage as _coverage
-
-    classes = _coverage.classes_in(snapshot) if snapshot else {}
-    durable = [name for name in _coverage.DURABLE_CLASSES if classes.get(name)]
+    classes = coverage.classes_in(snapshot) if snapshot else {}
+    durable = [name for name in coverage.DURABLE_CLASSES if classes.get(name)]
     directional = rating in ("Buy", "Overweight", "Underweight", "Sell")
     if directional and not durable:
         seen = ", ".join(classes) or "none"
