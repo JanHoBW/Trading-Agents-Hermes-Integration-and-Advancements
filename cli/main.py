@@ -11,8 +11,8 @@ from cli.prompts import filter_analysts_for_asset_type, parse_analysts
 from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.memory import TradingMemoryLog
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
+from tradingagents.memory import TradingMemoryLog
 from tradingagents.portfolio import load_portfolio
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts

@@ -11,6 +11,7 @@ Usage:
                       [--window-days 7] [--max-items 10] [--with-market] [--out snap.json]
 """
 import argparse
+import contextlib
 import email.utils
 import hashlib
 import json
@@ -19,7 +20,7 @@ import re
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone as timezone
 
 DEFAULT_FEEDS = {
     "dpa-afx": "https://www.finanznachrichten.de/rss-nachrichten-medien-dpa-afx",
@@ -50,7 +51,7 @@ def parse_date(s):
     try:
         d = email.utils.parsedate_to_datetime(s)
         if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
+            d = d.replace(tzinfo=UTC)
         return d
     except Exception:
         return None
@@ -66,12 +67,12 @@ def fetch_feed(name, url):
         rec = {
             "link": (item.findtext("link") or "").strip(),
             "title": (item.findtext("title") or "").strip(),
-            "published_at": pub.astimezone(timezone.utc).isoformat() if pub else None,
+            "published_at": pub.astimezone(UTC).isoformat() if pub else None,
             "source": "finanznachrichten.de " + ("(dpa-AFX)" if "(dpa-AFX)" in desc else "(dpa)" if "(dpa)" in desc else "(other)"),
             "feed": name,
             "isin": (isin_el.text.strip() if isin_el is not None and isin_el.text else None),
             "excerpt": desc[:1500],
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
         }
         if rec["link"] and rec["published_at"]:
             out.append(rec)
@@ -86,10 +87,8 @@ def load_cache(path):
         for line in f:
             line = line.strip()
             if line:
-                try:
+                with contextlib.suppress(Exception):
                     seen.add(json.loads(line)["link"])
-                except Exception:
-                    pass
     return seen
 
 
@@ -142,7 +141,7 @@ def cmd_snapshot(args):
             day = (r.get("published_at") or "")[:10]
             if not day or not (start.isoformat() <= day <= as_of.isoformat()):
                 continue
-            text = r.get("title") + " " + (r.get("excerpt") or "")
+            _text = r.get("title") + " " + (r.get("excerpt") or "")
             if args.isin and r.get("isin") and r["isin"].lower() == args.isin.lower():
                 hits.append(r)
                 continue
@@ -164,7 +163,7 @@ def cmd_snapshot(args):
                 hits.append(r)
     hits = hits[: args.max_items]
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     snap = {
         "schema_version": 1,
         "ticker": args.ticker,

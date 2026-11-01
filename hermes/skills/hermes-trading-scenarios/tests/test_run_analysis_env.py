@@ -125,17 +125,17 @@ class LLMProfileTests(unittest.TestCase):
 
     def test_explicit_lmstudio_gates_on_endpoint_reachability(self):
         with patch.dict(os.environ, clear=True), \
-                patch.object(run_analysis, "_endpoint_reachable", return_value=False) as reach:
-            with self.assertRaises(SystemExit) as ctx:
-                run_analysis.resolve_llm_profile("lmstudio")
+                patch.object(run_analysis, "_endpoint_reachable", return_value=False) as reach, \
+                self.assertRaises(SystemExit) as ctx:
+            run_analysis.resolve_llm_profile("lmstudio")
         self.assertEqual(ctx.exception.code, 2)
         self.assertTrue(reach.called)
 
     def test_copilot_profile_fails_loudly_without_token(self):
         home = self._home_with("")
-        with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=True):
-            with self.assertRaises(SystemExit) as ctx:
-                run_analysis.resolve_llm_profile("copilot")
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=True), \
+                self.assertRaises(SystemExit) as ctx:
+            run_analysis.resolve_llm_profile("copilot")
         self.assertEqual(ctx.exception.code, 2)
 
     def test_lmstudio_url_and_model_overrides(self):
@@ -175,9 +175,9 @@ class OrchestrationTests(unittest.TestCase):
             self.assertTrue(out.is_dir())
 
     def test_default_output_dir_without_suffix(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.object(Path, "home", return_value=Path(tmp)):
-                out = run_analysis.default_output_dir("RHM.DE", "2026-10-20", None)
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(Path, "home", return_value=Path(tmp)):
+            out = run_analysis.default_output_dir("RHM.DE", "2026-10-20", None)
         self.assertEqual(
             str(out),
             f"{tmp}/.tradingagents/reports/trading-scenarios/RHM.DE/2026-10-20")

@@ -9,7 +9,6 @@ own company name and keeps the strict symbol tag filter.
 from __future__ import annotations
 
 from datetime import datetime
-from unittest import mock
 
 import pytest
 

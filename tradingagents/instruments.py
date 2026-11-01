@@ -14,14 +14,16 @@ change slowly while a run needs the numbers quickly.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 
 SCHEMA = "tradingagents.instruments.v1"
 ARIVA_URL = "https://www.ariva.de/{key}"
@@ -68,8 +70,8 @@ class Instrument:
         return self.kind in {"knock_out", "option"}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Instrument":
-        known = {f for f in cls.__dataclass_fields__}
+    def from_dict(cls, data: Mapping[str, Any]) -> Instrument:
+        known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in dict(data).items() if k in known})
 
 
@@ -417,10 +419,8 @@ def resolve(
         if record:
             cache[symbol] = record
     if changed and write:
-        try:
+        with contextlib.suppress(OSError):
             save_cache(cache, cache_path)
-        except OSError:
-            pass
     return {k.upper(): v for k, v in cache.items()}
 
 

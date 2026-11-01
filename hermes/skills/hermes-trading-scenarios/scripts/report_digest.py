@@ -94,6 +94,18 @@ def build_digest(run_dir: Path, *, include_report: bool = True,
         if data is None:
             missing.append(name)
         else:
+            # Full daily history belongs to the on-disk replay artifact, not
+            # every audit prompt. Retain unrounded endpoints and source metadata.
+            snapshot = data.get("market_snapshot") if name == "sizing.json" else None
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("ohlcv"), list):
+                rows = snapshot["ohlcv"]
+                data["market_snapshot"] = {
+                    **{key: value for key, value in snapshot.items() if key != "ohlcv"},
+                    "row_count": len(rows),
+                    "first_row": rows[0] if rows else None,
+                    "last_row": rows[-1] if rows else None,
+                    "rows_omitted": "Read market_snapshot.json for full replay inputs; stored digest is not revalidated here.",
+                }
             facts[name[:-5]] = data
     for name in RUN_FILES:
         path = run_dir / name

@@ -164,9 +164,8 @@ class DoctorTests(unittest.TestCase):
                     "issuer_registry_path": str(repo / "registry.json"),
                     "memory_entries": 3, "memory_pending": 1, "memory_writable": True}), \
                 patch.object(run_analysis, "_profile_precheck", return_value=(True, "")), \
-                redirect_stdout(buf):
-            with self.assertRaises(SystemExit) as ctx:
-                run_analysis.cmd_doctor(args)
+                redirect_stdout(buf), self.assertRaises(SystemExit) as ctx:
+            run_analysis.cmd_doctor(args)
         return ctx.exception.code, json.loads(buf.getvalue())
 
     def test_doctor_ok_exits_zero(self):

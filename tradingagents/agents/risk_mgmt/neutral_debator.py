@@ -1,12 +1,12 @@
 from tradingagents.agents.context import (
+    RISK_QUANTIFICATION,
+    UNTRUSTED_DATA_PREAMBLE,
     get_instrument_context_from_state,
     get_language_instruction,
-    UNTRUSTED_DATA_PREAMBLE,
     get_portfolio_context_from_state,
     get_sizing_context_from_state,
     opponent_argument_or_opening,
     report_or_absent,
-    RISK_QUANTIFICATION,
 )
 
 

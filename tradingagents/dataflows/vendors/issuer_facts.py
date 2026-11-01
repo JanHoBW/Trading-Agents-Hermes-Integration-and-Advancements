@@ -50,11 +50,13 @@ read after someone recorded that it may be.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Literal, TypedDict
 from urllib.parse import urlparse
 
 import requests
@@ -97,8 +99,8 @@ _RESULTS_SLUG_RE = re.compile(
 # Sentences that state a *forward* expectation. Achieved figures and order news
 # must not match, or the extraction reports last period's actuals as guidance.
 _GUIDANCE_CONTEXT_RE = re.compile(
-    r"(prognose|rechnet|erwartet|erwartete|ausblick|guidance|outlook|anvisiert|"
-    r"projektiert|zielt|plant|strebt)",
+    r"(prognose|rechnet|erwartet|erwartete|erwartung|ausblick|guidance|outlook|anvisiert|"
+    r"projektiert|zielt|plant|strebt|expects?|forecast)",
     re.IGNORECASE,
 )
 
@@ -108,7 +110,7 @@ _GUIDANCE_CONTEXT_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _guess_reference_date(text: str) -> str:
@@ -189,7 +191,7 @@ def _strip_html(chunk: str) -> str:
     return re.sub(r"\n\s*\n+", "\n", text).strip()
 
 
-def parse_release_index(html: str, cfg: dict) -> list[dict]:
+def parse_release_index(html: str, cfg: dict, *, as_of: str | None = None) -> list[dict]:
     """Dated entries from a server-rendered IR index page.
 
     Some issuers have no facts endpoint *and* no date in their release URLs (so
@@ -232,6 +234,9 @@ def parse_release_index(html: str, cfg: dict) -> list[dict]:
             "text": body[:MAX_INDEX_TEXT],
         })
     entries.sort(key=lambda e: e["date"], reverse=True)
+    if as_of is not None:
+        cutoff = date.fromisoformat(as_of)
+        entries = [e for e in entries if date.fromisoformat(e["date"]) <= cutoff]
     return entries[:MAX_INDEX_ENTRIES]
 
 
@@ -314,8 +319,75 @@ def extract_quote(node) -> dict:
     return {}
 
 
-def extract_guidance(text: str) -> dict:
-    """Guidance sentences from release prose: forward range and margin only.
+class ReleaseFactEvidence(TypedDict):
+    label: str
+    value: str
+    reference_date: str
+    publication_date: str
+    perimeter_note: str
+    source_url: str
+    raw_sentence: str
+
+
+def extract_release_facts(text: str, patterns: list[dict], *, publication_date: str,
+                          source_url: str, as_of: str) -> list[ReleaseFactEvidence]:
+    """Configured labels only; retain the exact matched wording and dated scope."""
+    evidence: list[ReleaseFactEvidence] = []
+    flat = re.sub(r"\s+", " ", text or "")
+    for entry in patterns:
+        try:
+            match = re.search(entry["regex"], flat, re.I)
+        except (re.error, KeyError):
+            continue
+        if not match:
+            continue
+        raw_date = match.groupdict().get("date") or entry.get("reference_date") or publication_date
+        try:
+            reference = datetime.strptime(raw_date, entry.get("date_format") or "%Y-%m-%d").date()
+            if reference > date.fromisoformat(as_of) or date.fromisoformat(publication_date) > date.fromisoformat(as_of):
+                continue
+        except (ValueError, TypeError):
+            continue
+        values = apply_prose_facts(flat, [entry])
+        for label, value in values.items():
+            evidence.append({"label": label, "value": value, "reference_date": reference.isoformat(),
+                             "publication_date": publication_date, "source_url": source_url,
+                             "perimeter_note": str(entry.get("perimeter_note") or "not stated; see release"),
+                             "raw_sentence": match.group()})
+    return evidence
+
+
+class GuidanceRange(TypedDict):
+    low: float
+    high: float
+    unit: str
+    currency: str
+
+
+class GuidanceEvidence(TypedDict, total=False):
+    guidance_range: str
+    guidance_margin: str
+    guidance_sentence: str
+    guidance_numeric_range: GuidanceRange
+    guidance_raw_sentence: str
+    guidance_direction: Literal["raise", "cut", "confirm", "unspecified"]
+    guidance_reason: str
+
+
+_EN_RANGE_RE = re.compile(
+    r"(?:range of|between)\s*(?:€|EUR\s*)?(\d+(?:[.,]\d+)?)\s*(billion|million|bn|m)?"
+    r"\s*(?:to|and|–|-)\s*(?:€|EUR\s*)?(\d+(?:[.,]\d+)?)\s*(billion|million|bn|m)?",
+    re.I,
+)
+_DIRECTION_PATTERNS: tuple[tuple[Literal["raise", "cut", "confirm"], re.Pattern], ...] = (
+    ("confirm", re.compile(r"\bconfirms?\b|bestätigt|bekräftigt", re.I)),
+    ("cut", re.compile(r"\breduced\b|\blowered\b|\bcuts?\b|gesenkt|senkt|reduziert", re.I)),
+    ("raise", re.compile(r"\braised\b|\braises\b|\bincreases? (?:its |the )?(?:guidance|forecast|outlook)|erhöht|angehoben", re.I)),
+)
+
+
+def extract_guidance(text: str) -> GuidanceEvidence:
+    """Guidance ranges, margins and explicit outlook actions from release prose.
 
     Two deliberate narrowings, both learned from a real H1 release:
 
@@ -329,7 +401,7 @@ def extract_guidance(text: str) -> dict:
 
     Only what the text states is returned; a missing pattern stays missing.
     """
-    guidance: dict[str, str] = {}
+    guidance: GuidanceEvidence = {}
     flat = re.sub(r"\s+", " ", text or "")
     sentences = [s for s in re.split(r"(?<=[.!?;])\s+", flat) if s.strip()]
     candidates = [s for s in sentences if _GUIDANCE_CONTEXT_RE.search(s)] or [flat]
@@ -354,12 +426,51 @@ def extract_guidance(text: str) -> dict:
                 low, high, unit = span.group(1), span.group(2), (span.group(3) or "").strip()
                 guidance["guidance_range"] = f"{low} bis {high}{(' ' + unit) if unit else ''}".strip()
                 guidance["guidance_sentence"] = sentence.strip(" .;-")[:400]
+                guidance["guidance_raw_sentence"] = sentence
+                # Retain the quotation if numeric conversion is unavailable.
+                with contextlib.suppress(ValueError):
+                    guidance["guidance_numeric_range"] = {
+                        "low": float(low.replace(".", "").replace(",", ".") if "," in low else low),
+                        "high": float(high.replace(".", "").replace(",", ".") if "," in high else high),
+                        "unit": unit, "currency": "EUR" if re.search(r"EUR|Euro|€", span.group(), re.I) else "",
+                    }
+
+            elif _GUIDANCE_CONTEXT_RE.search(sentence):
+                span = _EN_RANGE_RE.search(sentence)
+                if span:
+                    low, high = span.group(1), span.group(3)
+                    unit = span.group(4) or span.group(2) or ""
+                    guidance["guidance_range"] = f"{low} to {high} {unit}".strip()
+                    guidance["guidance_numeric_range"] = {
+                        "low": float(low.replace(",", ".")), "high": float(high.replace(",", ".")),
+                        "unit": unit, "currency": "EUR" if "€" in span.group() or "EUR" in span.group() else "",
+                    }
+                    guidance["guidance_sentence"] = sentence[:400]
         if "guidance_margin" not in guidance:
             margin = _MARGIN_RE.search(sentence)
             if margin and follows_context(sentence, margin.start()):
                 guidance["guidance_margin"] = f"{margin.group(1)} %"
         if "guidance_range" in guidance and "guidance_margin" in guidance:
             break
+    # Confirmation takes precedence over a clause recalling a previous raise.
+    # "Now" and organic sales growth alone establish no forecast direction.
+    for index, sentence in enumerate(sentences):
+        if not _GUIDANCE_CONTEXT_RE.search(sentence):
+            continue
+        for direction, pattern in _DIRECTION_PATTERNS:
+            if pattern.search(sentence):
+                guidance["guidance_direction"] = direction
+                guidance["guidance_raw_sentence"] = sentence
+                guidance.setdefault("guidance_sentence", sentence[:400])
+                context = " ".join(sentences[max(0, index - 1):index + 1])
+                if re.search(r"as a result|due to|because|infolge|aufgrund|in Folge", context, re.I):
+                    guidance["guidance_reason"] = context[:GUIDANCE_EXCERPT_CHARS]
+                break
+        if "guidance_direction" in guidance:
+            break
+    if guidance:
+        guidance.setdefault("guidance_direction", "unspecified")
+        guidance.setdefault("guidance_raw_sentence", guidance.get("guidance_sentence", ""))
     return guidance
 
 
@@ -399,7 +510,7 @@ def diff_facts(old: dict | None, new: dict) -> list[str]:
             changes.append(f"GEAENDERT (Release): {label}: {before} -> {after}")
 
     old_g, new_g = old.get("guidance") or {}, new.get("guidance") or {}
-    for key in ("guidance_range", "guidance_margin"):
+    for key in ("guidance_range", "guidance_margin", "guidance_direction", "guidance_reason", "guidance_raw_sentence"):
         before, after = old_g.get(key), new_g.get(key)
         if before and after and before != after:
             changes.append(f"GEAENDERT: {key}: {before} -> {after}")
@@ -449,6 +560,8 @@ def render_ir_facts(facts: dict, *, delta: list[str] | None = None) -> str:
     lines.append("")
 
     figures = facts.get("facts") or {}
+    for gap in facts.get("historical_unavailable") or []:
+        lines.append(f"- GAP: {gap}")
     if figures:
         for label, value in figures.items():
             lines.append(f"- {label}: {value}")
@@ -479,6 +592,11 @@ def render_ir_facts(facts: dict, *, delta: list[str] | None = None) -> str:
         for key in ("guidance_range", "guidance_margin"):
             if guidance.get(key):
                 lines.append(f"  - {key}: {guidance[key]}")
+        for key in ("guidance_direction", "guidance_reason"):
+            if guidance.get(key):
+                lines.append(f"  - {key}: {guidance[key]}")
+        if guidance.get("guidance_raw_sentence"):
+            lines.append(f"  - raw wording: \"{guidance['guidance_raw_sentence']}\"")
         if guidance.get("guidance_sentence"):
             lines.append(f"  - wording: \"{guidance['guidance_sentence']}\"")
         lines.append(
@@ -497,6 +615,10 @@ def render_ir_facts(facts: dict, *, delta: list[str] | None = None) -> str:
             lines.append(f"  - {label}: {value}")
 
     latest = facts.get("latest_publications") or []
+    for entry in facts.get("release_fact_evidence") or []:
+        lines.append(f"  - Evidence [{entry['label']}]: reference {entry['reference_date']} · "
+                     f"published {entry['publication_date']} · perimeter: {entry['perimeter_note']} · "
+                     f"{entry['source_url']} · wording: \"{entry['raw_sentence']}\"")
     if latest:
         lines.append("")
         lines.append("- Latest IR publications (dates from the issuer's own index page):")
@@ -555,10 +677,8 @@ def load_state(ticker: str) -> dict | None:
 def save_state(ticker: str, facts: dict) -> None:
     """Persist the collected facts; a failed write never fails the analysis."""
     path = _state_path(ticker)
-    try:
+    with contextlib.suppress(OSError):
         path.write_text(json.dumps(facts, ensure_ascii=False, indent=1), encoding="utf-8")
-    except OSError:
-        pass
 
 
 def _cache_get(url: str) -> str | None:
@@ -655,16 +775,18 @@ def _fallback_source(instrument: dict) -> dict | None:
     return {"sitemap": sitemap, "url_patterns": [str(p) for p in patterns]}
 
 
-def _latest_release_text(instrument: dict) -> tuple[str, str, str]:
+def _latest_release_text(instrument: dict, *, as_of: str | None = None) -> tuple[str, str, str]:
     """``(date, url, text)`` of the newest release reachable via the sitemap."""
     source = _fallback_source(instrument)
     if not source:
         raise VendorNotConfiguredError("no sitemap configured for the release-text fallback")
     urls = issuer_ir._sitemap_urls(source["sitemap"])
     # A window wide enough to find the newest release, narrow enough to stay cheap.
+    cutoff = date.fromisoformat(as_of) if as_of is not None else date.today()
     entries = issuer_ir.dated_entries(
-        urls, source["url_patterns"], date(2000, 1, 1), date.today()
+        urls, source["url_patterns"], date(2000, 1, 1), cutoff
     )
+    entries = [e for e in entries if date.fromisoformat(e["date"]) <= cutoff]
     entries = [e for e in entries if "/de/" in e["url"]] or entries
     for entry in sorted(entries, key=lambda e: (e["date"], e["url"]), reverse=True)[:4]:
         if not issuer_ir._allowed(entry["url"]):
@@ -678,18 +800,23 @@ def _latest_release_text(instrument: dict) -> tuple[str, str, str]:
     raise VendorUnavailableError("no readable issuer release found for the guidance fallback")
 
 
-def _guidance_from_releases(instrument: dict, limit: int = 6) -> tuple[dict, str, str, str]:
+def _guidance_from_releases(instrument: dict, limit: int = 6, *, as_of: str | None = None,
+                            prose_patterns: list[dict] | None = None) -> tuple[GuidanceEvidence, str, str, str]:
     """``(guidance, date, url, text)`` from the newest release that states guidance.
 
     Company news and order announcements carry no guidance sentence, so the
     newest release is usually the wrong one; a results publication a few weeks
     back is the right one. Scanning a bounded list is cheaper than guessing.
+    With ``prose_patterns``, select the newest matching release figures instead
+    of requiring guidance. Their publication date is independent of guidance.
     """
     source = _fallback_source(instrument)
     if not source:
         raise VendorNotConfiguredError("no sitemap configured for the release-text fallback")
     urls = issuer_ir._sitemap_urls(source["sitemap"])
-    entries = issuer_ir.dated_entries(urls, source["url_patterns"], date(2000, 1, 1), date.today())
+    cutoff = date.fromisoformat(as_of) if as_of is not None else date.today()
+    entries = issuer_ir.dated_entries(urls, source["url_patterns"], date(2000, 1, 1), cutoff)
+    entries = [e for e in entries if date.fromisoformat(e["date"]) <= cutoff]
     entries = [e for e in entries if "/de/" in e["url"]] or entries
     # Guidance lives in results publications, not in the newest order news: sort
     # results-like slugs to the front, newest first inside each group, and scan a
@@ -706,26 +833,40 @@ def _guidance_from_releases(instrument: dict, limit: int = 6) -> tuple[dict, str
         except VendorUnavailableError:
             continue
         found = extract_guidance(text)
-        if found:
+        if prose_patterns is not None:
+            if extract_release_facts(text, prose_patterns, publication_date=entry["date"],
+                                     source_url=entry["url"], as_of=cutoff.isoformat()):
+                return found, entry["date"], entry["url"], text
+        elif found:
             return found, entry["date"], entry["url"], text
     return {}, "", "", ""
 
 
-def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
+def collect_ir_facts(ticker: str, config: dict | None = None, *, as_of: str | None = None) -> dict:
     """Every fact this issuer's configuration can serve, as a plain dict.
 
     Deterministic and network-only-on-miss: the facts endpoint is cached for six
     hours, and a missing quote never costs the key figures.
+    ``as_of`` is an ISO-date cutoff. Historical runs serve dated publications,
+    never mutable current-only endpoint/calendar observations.
     """
     instrument = load_instrument(ticker, config)
     cfg = _facts_config(instrument, ticker)
 
+    cutoff = date.fromisoformat(as_of) if as_of is not None else date.today()
+    historical = cutoff < date.today()
+    historical_unavailable = []
+    if historical:
+        historical_unavailable = [
+            "facts endpoint, quote and calendar are current-only; historical snapshots unavailable"
+        ]
+
     facts: dict[str, str] = {}
-    reference = cfg["reference_date"]
+    reference = "" if historical else cfg["reference_date"]
     source = cfg["facts_json"] or ""
     facts_error = ""
 
-    if cfg["facts_json"]:
+    if cfg["facts_json"] and not historical:
         document, raw = _fetch_json(cfg["facts_json"])
         pairs = walk_facts(document)
         if cfg["facts_include"]:
@@ -737,7 +878,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         if not reference:
             reference = _guess_reference_date(raw)
 
-    guidance: dict[str, str] = {}
+    guidance: GuidanceEvidence = {}
     guidance_date = ""
     guidance_source: list[str] = [""]
     # Figures that the issuer states only in release prose (quarterly/H1 margins)
@@ -748,6 +889,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
     release_facts: dict[str, str] = {}
     release_facts_date = ""
     release_facts_source = ""
+    release_fact_evidence: list[ReleaseFactEvidence] = []
     latest: list[dict] = []
 
     if not facts and cfg["release_index"]:
@@ -756,14 +898,21 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         # and lists every publication with a date; parse that page instead.
         index_cfg = cfg["release_index"]
         page = _fetch_text(index_cfg["url"], DEFAULT_OVERVIEW_CACHE_SECONDS)
-        entries = parse_release_index(page, index_cfg)
+        entries = parse_release_index(page, index_cfg, as_of=cutoff.isoformat())
+        entries = [e for e in entries if date.fromisoformat(e["date"]) <= cutoff]
         if not entries:
-            raise VendorUnavailableError(
-                f"no dated entry matched ir_facts.release_index.entry_regex on {index_cfg['url']}"
-            )
+            if not historical:
+                raise VendorUnavailableError(
+                    f"no dated entry matched ir_facts.release_index.entry_regex on {index_cfg['url']}"
+                )
+            facts_error = "no dated release available on or before as_of"
         latest = entries[:5]
-        target = next((e for e in entries if _RESULTS_SLUG_RE.search(e["title"])), entries[0])
-        facts = apply_prose_facts(target["text"], cfg["prose_facts"])
+        target = next((e for e in entries if _RESULTS_SLUG_RE.search(e["title"])),
+                      entries[0] if entries else {"date": "", "text": ""})
+        release_fact_evidence = extract_release_facts(
+            target["text"], cfg["prose_facts"], publication_date=target["date"],
+            source_url=index_cfg["url"], as_of=cutoff.isoformat())
+        facts = {e["label"]: e["value"] for e in release_fact_evidence}
         guidance = extract_guidance(target["text"])
         guidance_date = target["date"]
         guidance_source[0] = cfg["overview_url"] or index_cfg["url"]
@@ -776,48 +925,71 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
                 f"results entry ({target['date']}); report the figures as unavailable"
             )
 
-    if facts and not cfg["release_index"] and _fallback_source(instrument):
+    if (facts or historical) and not cfg["release_index"] and _fallback_source(instrument):
         # The facts block states the last completed year's figures; the current
         # guidance lives in the newest release. Both belong in the prompt — a
         # prior-year backlog next to a cut guidance range is the whole point.
         # A missing sitemap or an unreadable release is not a gap here: the
         # figures above are already the answer.
         try:
-            found, found_date, release_url, release_text = _guidance_from_releases(instrument)
+            found, found_date, release_url, release_text = (
+                _guidance_from_releases(instrument, as_of=cutoff.isoformat()) if as_of is not None
+                else _guidance_from_releases(instrument))
             if found and not guidance:
                 guidance, guidance_date = found, found_date
                 guidance_source[0] = release_url
-            if cfg["prose_facts"] and release_text:
-                release_facts = apply_prose_facts(release_text, cfg["prose_facts"])
+            if cfg["prose_facts"]:
+                _, figure_date, figure_url, figure_text = _guidance_from_releases(
+                    instrument, as_of=cutoff.isoformat(), prose_patterns=cfg["prose_facts"])
+                release_fact_evidence = extract_release_facts(
+                    figure_text, cfg["prose_facts"], publication_date=figure_date,
+                    source_url=figure_url, as_of=cutoff.isoformat())
+                release_facts = {e["label"]: e["value"] for e in release_fact_evidence}
                 if release_facts:
-                    release_facts_date = found_date or guidance_date
-                    release_facts_source = release_url
+                    release_facts_date = figure_date
+                    release_facts_source = figure_url
         except (VendorNotConfiguredError, VendorUnavailableError):
             guidance = {}
             guidance_date = ""
-    if not facts and not cfg["release_index"]:
+    if historical and not cfg["release_index"] and not _fallback_source(instrument):
+        facts_error = "current-only facts endpoint; historical snapshot unavailable"
+    elif not facts and not guidance and not release_facts and not cfg["release_index"]:
         # No facts endpoint: fall back to the newest release's wording. Coarser,
         # and the block says so, but it keeps every sitemap-configured issuer
         # covered without a bespoke adapter.
-        release_date, release_url, text = _latest_release_text(instrument)
+        try:
+            release_date, release_url, text = (
+                _latest_release_text(instrument, as_of=cutoff.isoformat()) if as_of is not None
+                else _latest_release_text(instrument)
+            )
+        except VendorUnavailableError:
+            if not historical:
+                raise
+            release_date, release_url, text = "", "", ""
         guidance = extract_guidance(text)
         guidance_date = release_date
         source = release_url
+        release_fact_evidence = extract_release_facts(
+            text, cfg["prose_facts"], publication_date=release_date,
+            source_url=release_url, as_of=cutoff.isoformat())
+        release_facts = {e["label"]: e["value"] for e in release_fact_evidence}
+        if release_facts:
+            release_facts_date, release_facts_source = release_date, release_url
         if not guidance:
             facts_error = (
                 "the release text carried no recognisable guidance sentence "
-                "(forward range/margin); report the guidance as unavailable"
+                "(forward range/margin or explicit outlook action); report the guidance as unavailable"
             )
 
     quote: dict = {}
-    if cfg["quote_json"]:
+    if cfg["quote_json"] and not historical:
         try:
             quote = extract_quote(_fetch_json(cfg["quote_json"])[0])
         except (VendorNotConfiguredError, VendorUnavailableError):
             quote = {}
 
-    calendar = cfg["calendar"]
-    verified = cfg["calendar_verified"]
+    calendar = [] if historical else cfg["calendar"]
+    verified = "" if historical else cfg["calendar_verified"]
     stale = False
     if verified and calendar:
         try:
@@ -826,10 +998,20 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         except ValueError:
             stale = False
 
+    if reference:
+        try:
+            reference_day = datetime.strptime(reference, "%d.%m.%Y").date() if "." in reference else date.fromisoformat(reference)
+            if reference_day > cutoff:
+                facts, reference = {}, ""
+                facts_error = "facts reference date is after as_of; figures withheld"
+        except ValueError:
+            pass  # Non-date labels remain labelled as stated, never guessed.
+
     result = {
         "ticker": ticker.upper(),
         "issuer": instrument.get("issuer") or ticker,
-        "as_of": date.today().isoformat(),
+        "as_of": cutoff.isoformat(),
+        "historical_unavailable": historical_unavailable,
         "reference_date": reference,
         "perimeter_note": cfg["perimeter_note"],
         "terms_checked": cfg["terms_checked"],
@@ -844,6 +1026,7 @@ def collect_ir_facts(ticker: str, config: dict | None = None) -> dict:
         "calendar_verified": verified,
         "calendar_stale": stale,
         "release_facts": release_facts,
+        "release_fact_evidence": release_fact_evidence,
         "release_facts_date": release_facts_date,
         "release_facts_source": release_facts_source,
         "facts_error": facts_error,
@@ -859,8 +1042,9 @@ def get_ir_facts(ticker: str, as_of: str | None = None, *, include_delta: bool =
     current-date run: a historical backtest must not overwrite the delta basis
     of today's analysis with numbers it read from an old report.
     """
-    facts = collect_ir_facts(ticker)
-    previous = load_state(ticker) if include_delta else None
+    historical = as_of is not None and date.fromisoformat(as_of) < date.today()
+    facts = collect_ir_facts(ticker, as_of=as_of) if as_of is not None else collect_ir_facts(ticker)
+    previous = load_state(ticker) if include_delta and not historical else None
     delta = diff_facts(previous, facts) if previous else []
     if previous:
         facts["previous_seen"] = str(previous.get("as_of") or previous.get("stored_at") or "earlier run")

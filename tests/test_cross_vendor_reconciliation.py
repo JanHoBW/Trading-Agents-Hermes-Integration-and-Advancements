@@ -7,8 +7,8 @@ the primary data), so the healthy yfinance-primary path stays cost-free.
 import unittest
 from unittest.mock import patch
 
-from tradingagents.dataflows import reconciliation
 from tradingagents.agents import tools
+from tradingagents.dataflows import reconciliation
 
 # Real-shape fixtures: a leading "#" header, then a header row, then rows.
 # yfinance emits a pandas index date column + "Close"; Alpha Vantage emits a

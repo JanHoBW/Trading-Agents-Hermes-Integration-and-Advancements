@@ -124,8 +124,10 @@ def test_the_pm_prompt_carries_the_deterministic_size():
 def test_without_a_book_the_prompt_forbids_a_share_count():
     llm, captured = _capturing_llm()
     create_conservative_debator(llm)(_state())
-    assert "Deterministic sizing: not available" in captured["prompt"]
-    assert "Do not state a share count" in captured["prompt"]
+    # An absent structured direction is now explicitly NO_TRADE rather than
+    # unavailable sizing; the prohibition on an invented count is unchanged.
+    assert "Deterministic sizing: no executable size" in captured["prompt"]
+    assert "Do not propose a share count" in captured["prompt"]
 
 
 @pytest.mark.unit

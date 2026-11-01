@@ -445,7 +445,7 @@ def test_release_prose_facts_are_kept_out_of_the_annual_block(monkeypatch, instr
                         lambda url: (SNIPPET, json.dumps(SNIPPET)) if url.endswith("kennzahlen")
                         else (QUOTE, json.dumps(QUOTE)))
     monkeypatch.setattr(issuer_facts, "_guidance_from_releases",
-                        lambda inst, limit=6: ({"guidance_range": "13,7 bis 14,2 Mrd"}, "2026-08-06",
+                        lambda inst, limit=6, **kwargs: ({"guidance_range": "13,7 bis 14,2 Mrd"}, "2026-08-06",
                                                "https://example.com/release",
                                                "Die Marge stieg sogar auf 17,1% im Quartal."))
     facts = issuer_facts.collect_ir_facts("RHM.DE")

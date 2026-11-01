@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from tradingagents.dataflows import windows
-from tradingagents.dataflows import coverage
+from tradingagents.dataflows import coverage, windows
 from tradingagents.dataflows.errors import VendorNotConfiguredError, VendorUnavailableError
 from tradingagents.dataflows.vendors.issuer_facts import get_ir_facts
 from tradingagents.dataflows.vendors.issuer_ir import get_news_issuer_ir

@@ -7,7 +7,7 @@ recompute on every run and inject as context. The rating's expected direction is
 
     Buy/Overweight  -> positive alpha
     Sell/Underweight -> negative alpha
-    Hold            -> roughly flat (|alpha| within a small band)
+    Hold            -> no directional claim (excluded from directional rates)
 
 A "hit" is the alpha at a horizon landing on the expected side of the benchmark.
 Aggregates are win-rate per horizon; the anchor horizon (the fast signal) is the
@@ -25,7 +25,6 @@ from __future__ import annotations
 _BULL = {"buy", "overweight"}
 _BEAR = {"sell", "underweight"}
 _HOLD = {"hold", "neutral"}
-_HOLD_BAND = 0.02  # within ±2% alpha counts as a "hold" hit (no clear move)
 
 # How much a win-rate can carry. Per-instrument samples stay tiny at a realistic
 # run cadence, so the level is decided on pooled evidence (cross-ticker anchor
@@ -47,7 +46,7 @@ def _hit(rating, alpha):
     if r in _BEAR:
         return alpha < 0
     if r in _HOLD:
-        return abs(alpha) < _HOLD_BAND
+        return None  # Hold makes no directional forecast, matching backtest scoring.
     return None
 
 
@@ -69,8 +68,19 @@ def build_calibration(entries, ticker, anchor, as_of=None):
     point-in-time for backtests (#1251).
     """
     if as_of is not None:
-        entries = [e for e in entries
-                   if e.get("resolved") and e["resolved"] <= as_of]
+        entries = [{**e, "horizons": {h: v for h, v in (e.get("horizons") or {}).items()
+                    if ((v or {}).get("resolution") or (e.get("resolved") if h == anchor else None))
+                    and ((v or {}).get("resolution") or e["resolved"]) <= as_of},
+                    "realized": e.get("realized") if ((e.get("realized") or {}).get("close_date")
+                        and e["realized"]["close_date"] <= as_of) else None}
+                   for e in entries if e.get("resolved") and e["resolved"] <= as_of]
+    # Memory contract is one decision per ticker/date. A repeated parsed record
+    # or rerun cannot enlarge the empirical sample; keep the latest full record.
+    unique = {}
+    for i, entry in enumerate(entries):
+        key = (entry.get("ticker"), entry.get("date")) if entry.get("date") else ("undated", i)
+        unique[key] = entry
+    entries = list(unique.values())
 
     def _agg(subset):
         by_h: dict[int, dict] = {}
@@ -98,9 +108,17 @@ def build_calibration(entries, ticker, anchor, as_of=None):
 
     def _pack(subset):
         by_h, realized = _agg(subset)
-        n = sum(d["n"] for d in by_h.values()) + realized["n"]
+        n_outcomes = sum(d["n"] for d in by_h.values()) + realized["n"]
+        def evaluable(e, horizon=None):
+            values = (e.get("horizons") or {})
+            values = [values.get(horizon, {})] if horizon is not None else values.values()
+            return (any(_hit(e.get("rating"), (v or {}).get("alpha")) is not None for v in values)
+                    or _hit(e.get("rating"), (e.get("realized") or {}).get("return")) is not None)
+        n = sum(evaluable(e) for e in subset)
+        n_evidence = sum(evaluable(e, anchor) for e in subset)
         anchor_rate = by_h[anchor]["rate"] if anchor in by_h else None
-        return {"n": n, "by_horizon": by_h, "anchor_rate": anchor_rate, "realized": realized}
+        return {"n": n, "n_outcomes": n_outcomes, "n_evidence": n_evidence, "anchor": anchor,
+                "by_horizon": by_h, "anchor_rate": anchor_rate, "realized": realized}
 
     same = [e for e in entries if e.get("ticker") == ticker]
     result = {"ticker": _pack(same), "cross": _pack(entries)}
@@ -114,9 +132,11 @@ def build_calibration(entries, ticker, anchor, as_of=None):
 
 
 def _anchor_counts(pack: dict, anchor: int | None = None) -> tuple[int, int | None]:
-    """(n, rate) for the pack's anchor horizon, falling back to its largest one."""
+    """(n, rate) for the configured anchor; never substitute a different horizon."""
     by_h = pack.get("by_horizon") or {}
-    key = anchor if anchor in by_h else (min(by_h) if by_h else None)
+    key = anchor if anchor is not None else pack.get("anchor")
+    if key not in by_h:
+        return 0, None
     if key is None:
         return 0, None
     return by_h[key]["n"], by_h[key].get("rate")
@@ -134,16 +154,17 @@ def _confidence(pack: dict, pooled: dict | None = None) -> dict:
     realized = (pack.get("realized") or {})
     n_real = realized.get("n") or 0
     n_pooled, rate_pooled = _anchor_counts(pooled) if pooled else (n_own, rate_own)
-    n_evidence = n_pooled + (pooled["realized"]["n"] if pooled else n_real)
+    evidence_pack = pooled if pooled is not None else pack
+    n_evidence = evidence_pack.get("n_evidence", 0)
     rate = rate_pooled if rate_pooled is not None else rate_own
     detail = {"n": n_evidence, "n_instrument": n_own, "n_realized": n_real, "rate": rate}
 
     if n_evidence < _CONF_MEDIUM_N:
         return {**detail, "level": "low",
-                "reason": f"only {n_evidence} settled outcome(s) — a rate this thin is not evidence"}
+                "reason": f"only {n_evidence} scored decision(s) — a rate this thin is not evidence"}
     if n_evidence < _CONF_HIGH_N:
         return {**detail, "level": "medium",
-                "reason": (f"{n_evidence} settled outcomes, hit-rate {_pct(rate)} — "
+                "reason": (f"{n_evidence} scored decisions, hit-rate {_pct(rate)} — "
                            "indicative, not conclusive")}
     # Instability caveat, checked before the chance band: an instrument whose own
     # rate disagrees sharply with the pooled one is a small, possibly
@@ -151,17 +172,17 @@ def _confidence(pack: dict, pooled: dict | None = None) -> dict:
     if (pooled is not None and n_own >= 5 and rate_own is not None and rate_pooled is not None
             and abs(rate_own - rate_pooled) > _CONF_DISAGREEMENT):
         return {**detail, "level": "medium",
-                "reason": (f"{n_evidence} settled outcomes pooled, but this instrument's "
+                "reason": (f"{n_evidence} scored decisions pooled, but this instrument's "
                            f"own rate ({_pct(rate_own)} of {n_own}) disagrees with the "
                            f"pooled one ({_pct(rate_pooled)}) — treat as unstable")}
     in_band = rate is not None and _CONF_FLAT_BAND[0] <= rate <= _CONF_FLAT_BAND[1]
     if in_band:
         return {**detail, "level": "medium",
-                "reason": (f"{n_evidence} settled outcomes, hit-rate {_pct(rate)} — "
+                "reason": (f"{n_evidence} scored decisions, hit-rate {_pct(rate)} — "
                            "indistinguishable from chance, so the record does not "
                            "support leaning either way")}
     return {**detail, "level": "high",
-            "reason": f"{n_evidence} settled outcomes, hit-rate {_pct(rate)}"}
+            "reason": f"{n_evidence} scored decisions, hit-rate {_pct(rate)}"}
 
 
 def _pct(rate) -> str:

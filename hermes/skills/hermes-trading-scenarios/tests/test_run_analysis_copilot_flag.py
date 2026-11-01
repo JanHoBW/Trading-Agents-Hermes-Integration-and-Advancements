@@ -6,7 +6,6 @@ is per run (--allow-copilot) or per environment (TRADINGAGENTS_ALLOW_COPILOT=1).
 import importlib.util
 import os
 import unittest
-from argparse import Namespace
 from pathlib import Path
 from unittest.mock import mock_open, patch
 

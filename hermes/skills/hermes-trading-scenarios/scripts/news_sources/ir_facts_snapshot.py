@@ -48,48 +48,59 @@ def _repo_import():
 
 def _normalise_facts(raw: dict, ticker: str) -> dict:
     """Accept a bare facts object or a vendor dict; return the snapshot block."""
-    if "facts" in raw and isinstance(raw["facts"], dict):
+    if isinstance(raw.get("facts"), dict) or any(key in raw for key in ("release_facts", "release_fact_evidence")):
         # vendor output: {"facts": {label: value}, "reference_date": ...}
+        evidence = {entry["label"]: entry for entry in raw.get("release_fact_evidence") or []}
         figures = [
-            {"label": label, "value": value,
-             "source_url": raw.get("source") or raw.get("overview_url") or ""}
-            for label, value in raw["facts"].items()
+            dict(evidence.get(label) or {"label": label, "value": value,
+             "source_url": raw.get("source") or raw.get("overview_url") or "",
+             "reference_date": raw.get("reference_date") or ""})
+            for label, value in (raw.get("facts") or {}).items()
         ]
+        for label, value in (raw.get("release_facts") or {}).items():
+            if label in (raw.get("facts") or {}):
+                continue
+            figures.append(dict(evidence.get(label) or {
+                "label": label, "value": value,
+                "source_url": raw.get("release_facts_source") or "",
+                "reference_date": raw.get("release_facts_date") or "",
+                "publication_date": raw.get("release_facts_date") or "",
+                "perimeter_note": "not stated; see release",
+            }))
+        figures.extend(dict(entry) for label, entry in evidence.items()
+                       if label not in (raw.get("release_facts") or {}) and label not in (raw.get("facts") or {}))
+        # Collector display prose may be longer than schema-1 ordinary text.
+        # Keep the independent raw quotation untouched; never coerce numeric fields.
+        for figure in figures:
+            for key in ("label", "value", "perimeter_note"):
+                if isinstance(figure.get(key), str):
+                    figure[key] = figure[key][:200]
+        guidance = raw.get("guidance") or ""
+        if isinstance(guidance, dict):
+            guidance = {key: value[:200] if isinstance(value, str) and key != "guidance_raw_sentence" else value
+                        for key, value in guidance.items()}
         return {
             "issuer": raw.get("issuer") or ticker,
             "reference_date": raw.get("reference_date") or "",
+            **({"publication_date": raw["publication_date"]} if "publication_date" in raw else {}),
             "perimeter": raw.get("perimeter_note") or raw.get("perimeter") or "",
             "figures": figures[:MAX_FACTS],
-            "guidance": raw.get("guidance") or "",
+            "guidance": guidance,
+            "guidance_date": raw.get("guidance_date") or "",
+            "release_facts_date": raw.get("release_facts_date") or "",
+            "guidance_source": raw.get("guidance_source") or "",
+            "guidance_perimeter": raw.get("guidance_perimeter") or "not stated; see release",
             "calendar": raw.get("calendar") or [],
         }
-    # sub-agent output: {"figures": [{"label","value","source_url","reference_date"}], ...}
-    figures = raw.get("figures")
-    if not isinstance(figures, list):
+    # Imported typed evidence must survive the same validator as vendor data.
+    if "figures" not in raw and raw.get("guidance"):
+        raw = {**raw, "figures": []}
+    if not isinstance(raw.get("figures"), list):
         raise SystemExit("facts JSON needs either 'facts' (label->value) or 'figures' (list)")
-    clean = []
-    for figure in figures[:MAX_FACTS]:
-        if not isinstance(figure, dict) or not figure.get("label") or not figure.get("value"):
-            raise SystemExit("every figure needs 'label' and 'value'")
-        if not str(figure.get("source_url") or "").startswith("https://"):
-            raise SystemExit(f"figure {figure['label']!r} needs an https source_url")
-        clean.append({
-            "label": str(figure["label"]).strip(),
-            "value": str(figure["value"]).strip(),
-            "source_url": str(figure["source_url"]).strip(),
-            "reference_date": str(figure.get("reference_date") or raw.get("reference_date") or "").strip(),
-        })
-    reference = str(raw.get("reference_date") or "").strip()
-    if not reference:
-        raise SystemExit("facts JSON needs a reference_date (the figures' own as-of date)")
-    return {
-        "issuer": str(raw.get("issuer") or ticker).strip(),
-        "reference_date": reference,
-        "perimeter": str(raw.get("perimeter") or "").strip(),
-        "figures": clean,
-        "guidance": raw.get("guidance") or "",
-        "calendar": raw.get("calendar") or [],
-    }
+    return {**raw, "issuer": raw.get("issuer") or ticker,
+            "reference_date": raw.get("reference_date") or "",
+            "perimeter": raw.get("perimeter") or "",
+            "figures": raw["figures"][:MAX_FACTS]}
 
 
 def _write(ticker: str, as_of: str, facts: dict, out: Path) -> None:
@@ -136,11 +147,11 @@ def main(argv: list[str]) -> int:
     if args.cmd == "build":
         issuer_facts = _repo_import()
         try:
-            collected = issuer_facts.collect_ir_facts(args.ticker)
+            collected = issuer_facts.collect_ir_facts(args.ticker, as_of=args.date)
         except Exception as exc:  # noqa: BLE001 — CLI reports, never tracebacks
             print(f"IR-Fakten nicht abrufbar: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
-        if not collected.get("facts") and not collected.get("guidance"):
+        if not any(collected.get(key) for key in ("facts", "guidance", "release_facts", "release_fact_evidence")):
             print("keine Kennzahlen und keine Guidance gefunden", file=sys.stderr)
             return 2
         facts = _normalise_facts(collected, args.ticker)
@@ -152,6 +163,12 @@ def main(argv: list[str]) -> int:
             return 2
         facts = _normalise_facts(raw, args.ticker)
 
+    try:
+        from tradingagents.dataflows.vendors.news_supplement import _validate_facts
+        facts = _validate_facts(facts, as_of=args.date)
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        print(f"IR-Fakten ungueltig: {exc}", file=sys.stderr)
+        return 2
     if not facts["figures"] and not facts["guidance"]:
         print("Snapshot ohne Kennzahlen und ohne Guidance — nicht geschrieben", file=sys.stderr)
         return 2

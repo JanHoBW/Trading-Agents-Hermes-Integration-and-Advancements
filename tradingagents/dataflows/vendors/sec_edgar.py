@@ -30,6 +30,7 @@ from tradingagents import __version__
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.files import replace_file
+from tradingagents.dataflows.fundamental_analytics import render_analytics
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +78,9 @@ _STATEMENTS: dict[str, list[tuple[str, tuple[str, ...]]]] = {
 # end date, so a match on the end date alone can report half a year as a quarter.
 _SPANS = {"quarterly": (60, 115), "annual": (300, 400)}
 
-# A 10-Q's cash flows are often filed only year to date. A quarterly table takes
-# the quarter where filed, else the span to date, named in the column; it never
-# subtracts one filing from another, which would give a figure no filing states.
+# A 10-Q's cash flows are often filed only year to date. The RAW filing CSV
+# retains the explicitly named duration. The separate deterministic analytics
+# block differences matching cumulative inputs, with both filing vintages.
 _YEAR_TO_DATE = ((150, 200, 6), (240, 290, 9))
 
 # A fiscal year is a period an annual report covers. A 10-Q balance has no span
@@ -187,6 +188,46 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
     return dict(sorted(values.items())), chosen_unit
 
 
+def _period_records(facts: dict, kind: str, as_of_date: str, spans: tuple,
+                    forms: tuple, chosen: dict) -> list[dict]:
+    """Keep exact periods, units and filing provenance alongside the raw CSV."""
+    records = []
+    for label, tags in _STATEMENTS[kind]:
+        seen = set()
+        for tag in tags:
+            for unit, values in (facts.get(tag) or {}).get("units", {}).items():
+                latest = {}
+                covered = set()
+                for f in values:
+                    index = _span_index(f, spans)
+                    if f["filed"] > as_of_date or index is None:
+                        continue
+                    # Income CSV selects the shortest filed duration; do not
+                    # smuggle additional YTD amounts into that quarterly output.
+                    if kind != "cashflow" and chosen[label].get(f["end"]) != index:
+                        continue
+                    key = (f.get("start"), f["end"], unit)
+                    if not forms or f.get("form", "").startswith(forms):
+                        covered.add(key)
+                    if key not in latest or f["filed"] >= latest[key]["filed"]:
+                        latest[key] = f
+                for key, f in latest.items():
+                    if key in seen or key not in covered:
+                        continue
+                    seen.add(key)
+                    start = f.get("start")
+                    days = (date.fromisoformat(f["end"]) - date.fromisoformat(start)).days if start else None
+                    records.append({"metric": label, "value": f["val"], "unit": unit,
+                                    "start": start, "end": f["end"], "duration_days": days,
+                                    "filed": f["filed"], "accession": f.get("accn"),
+                                    "form": f.get("form"), "filing_fiscal_year": f.get("fy"),
+                                    "filing_fiscal_period": f.get("fp"), "tag": tag,
+                                    "source": "sec_edgar", "perimeter": "continuing_operations" if "ContinuingOperations" in tag else "total_group",
+                                    "basis": "reported", "capex_sign": "outflow_positive",
+                                    "tax_basis": "after_tax" if label in {"Net Income", "Operating Cash Flow"} else "not_specified"})
+    return records
+
+
 def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> str:
     as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
     cik = cik_for(ticker)
@@ -219,7 +260,7 @@ def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -
 
     header = (
         f"# {title} for {ticker.upper()} ({freq}), USD in millions unless the row says otherwise\n"
-        f"# SEC EDGAR facts filed on or before {as_of_date}, at the values filed then\n\n"
+        f"# SEC EDGAR facts filed on or before {as_of_date}, at the values filed then; RAW filed amounts: 6/9-month columns are YTD, not quarters. Comparable periods are in FUNDAMENTAL_ANALYTICS below.\n\n"
     )
     rows = [",".join([""] + [end + names[index] for end, index in periods])]
     for label, (values, unit) in lines.items():
@@ -234,7 +275,9 @@ def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -
             value = values.get((end, index)) if chosen[label].get(end) == index else None
             cells.append("" if value is None else f"{value / 1e6:.0f}" if unit == "USD" else f"{value:.2f}")
         rows.append(",".join([name] + cells))
-    return header + "\n".join(rows) + "\n"
+    metadata_spans = (*spans, _SPANS["annual"]) if quarterly and kind == "cashflow" else spans
+    records = _period_records(us_gaap, kind, as_of_date, metadata_spans, forms, chosen)
+    return header + "\n".join(rows) + "\n" + render_analytics(records, as_of_date, frequency=freq.lower())
 
 
 def get_balance_sheet(ticker: str, freq: str = "quarterly", as_of_date: str | None = None) -> str:

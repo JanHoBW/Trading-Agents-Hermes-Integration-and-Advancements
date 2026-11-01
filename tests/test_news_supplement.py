@@ -2,9 +2,9 @@
 import json
 from unittest.mock import patch
 
-from tradingagents.dataflows.config import get_config, set_config
-from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.dataflows import router
+from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.default_config import build_default_config
 
 
@@ -52,6 +52,7 @@ def test_snapshot_is_not_configured_by_default(monkeypatch):
 
 def test_wrong_instrument_or_asof_is_rejected(tmp_path):
     import pytest
+
     from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
     for overrides in ({"ticker": "OTHER"}, {"as_of": "2026-10-11"}):
         _snapshot(tmp_path, **overrides)
@@ -61,6 +62,7 @@ def test_wrong_instrument_or_asof_is_rejected(tmp_path):
 
 def test_no_qualifying_items_is_typed_no_data(tmp_path):
     import pytest
+
     from tradingagents.dataflows.errors import NoMarketDataError
     from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
     _snapshot(tmp_path)
@@ -71,7 +73,9 @@ def test_no_qualifying_items_is_typed_no_data(tmp_path):
 def test_item_cap_is_thirty(tmp_path):
     """30 items pass, 31 are rejected (cap raised from 10 on 2026-10-22)."""
     import copy
+
     import pytest
+
     from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
     base = {"published_at": "2026-10-08", "title": "Disclosure", "source": "Issuer",
             "url": "https://example.test/news", "excerpt": "Evidence text",
@@ -82,7 +86,7 @@ def test_item_cap_is_thirty(tmp_path):
         item["url"] = f"https://example.test/news/{i}"
         item["title"] = f"Disclosure {i}"
         items.append(item)
-    path = _snapshot(tmp_path, items=items[:30])
+    _snapshot(tmp_path, items=items[:30])
     assert "WEB_RESEARCH_SUPPLEMENT" in get_news_supplement("RHM.DE", "2026-10-03", "2026-10-10")
     _snapshot(tmp_path, items=items)
     with pytest.raises(VendorUnavailableError, match="at most 30"):
@@ -91,6 +95,7 @@ def test_item_cap_is_thirty(tmp_path):
 
 def test_oversized_snapshot_is_rejected(tmp_path):
     import pytest
+
     from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
     path = _snapshot(tmp_path)
     path.write_text(" " * 100001)
@@ -107,6 +112,7 @@ def test_snapshot_is_not_read_when_live_news_answers(tmp_path, monkeypatch):
 
 def test_missing_snapshot_and_invalid_url_are_source_failures(tmp_path):
     import pytest
+
     from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
     path = _snapshot(tmp_path)
     data = json.loads(path.read_text())

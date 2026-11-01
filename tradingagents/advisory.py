@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date, datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from tradingagents import fx
 
@@ -339,9 +340,9 @@ def market_levels(ticker: str, as_of_date: str, adv_window: int = 20) -> dict:
     try:
         from stockstats import wrap
 
-        from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
+        from tradingagents.dataflows.run_snapshot import frozen_rows, snapshot_artifact
 
-        frame = load_ohlcv(ticker, as_of_date, fill_gaps=False)
+        frame = frozen_rows(ticker, as_of_date)
         if frame is None or frame.empty:
             return {"available": False, "reason": "no price rows"}
         frame = frame.copy()
@@ -363,9 +364,12 @@ def market_levels(ticker: str, as_of_date: str, adv_window: int = 20) -> dict:
             "atr": atr,
             "adv_value": adv_value,
             "rows": int(len(frame)),
+            "snapshot": snapshot_artifact(),
         }
     except Exception as exc:  # noqa: BLE001 -- a data miss must not fail the run
-        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}
+        from tradingagents.dataflows.run_snapshot import snapshot_artifact
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200],
+                "snapshot": snapshot_artifact()}
 
 
 def build_advisory(
@@ -600,9 +604,21 @@ def build_advisory(
               f"{share_of_adv:.2f} % of the 20-day average traded value "
               f"(limit {policy['max_adv_participation_pct']} %)", blocking=False)
 
+    # No proposed direction means no entry integrity to validate. Keep book
+    # observations, but do not call absent trade inputs a failed Hold plan.
+    no_direction = direction in {"none", "unknown"}
+    if no_direction:
+        checks = [c for c in checks if c["name"] not in {
+            "entry_price", "stop_loss", "equity", "levels_match_direction",
+            "stop_distance", "stop_derived", "atr_band", "reward_risk",
+        }]
+        missing = []
+        position = {}
     failed = [c for c in checks if c["blocking"] and not c["passed"]]
     warned = [c for c in checks if not c["blocking"] and not c["passed"]]
-    if not has_book:
+    if no_direction:
+        status, verdict = ("warn" if warned else "pass"), "NO_TRADE"
+    elif not has_book:
         status, verdict = "not_assessable", "NOT_APPLICABLE"
     elif failed:
         status, verdict = "fail", "BLOCKED"
@@ -647,13 +663,14 @@ def _plan(ticker, as_of, rating, direction, trader_action, account, levels,
                     if account.get(key) is not None},
         "policy": policy,
         "levels": plan_levels,
+        "market_snapshot": levels.get("snapshot"),
         "position": position,
         "caps": caps,
         "exposure": exposure or {"rows": [], "by_underlying": {}, "unresolved": [],
                                  "status": "empty"},
         "checks": checks,
         "missing": missing,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
 
@@ -810,7 +827,7 @@ def build_from_state(state: Mapping[str, Any], *, rating: str | None = None,
         rates = fx.cached_rates(_book_currencies(book, meta), book.get("currency"))
     except Exception:  # noqa: BLE001 -- a rate miss must not block a run
         rates = {}
-    return build_advisory(
+    plan = build_advisory(
         ticker=str(state.get("company_of_interest") or ""),
         as_of=str(state.get("trade_date") or ""),
         rating=rating or proposal.get("action") or state.get("final_rating"),
@@ -823,6 +840,37 @@ def build_from_state(state: Mapping[str, Any], *, rating: str | None = None,
         instruments=meta,
         fx_rates=rates,
     )
+    # Consume only the already collected issuer calendar. No fetch, no parsing
+    # model prose, and no inference that an unavailable calendar has no events.
+    try:
+        from tradingagents.dataflows.config import get_config
+        from tradingagents.dataflows.symbols import safe_ticker_component
+        cfg = config if config is not None else get_config()
+        cache = Path(cfg["data_cache_dir"]).expanduser() / "ir_facts" / (
+            safe_ticker_component(plan["ticker"]) + ".json")
+        facts = json.loads(cache.read_text(encoding="utf-8"))
+        as_of_day = date.fromisoformat(plan["as_of"])
+        verified = date.fromisoformat(facts["calendar_verified"])
+        collected = date.fromisoformat(facts["as_of"])
+        if (facts.get("ticker") == plan["ticker"] and not facts.get("calendar_stale")
+                and collected <= as_of_day and 0 <= (as_of_day - verified).days <= 120):
+            near = []
+            for event in facts.get("calendar") or []:
+                try:
+                    event_day = date.fromisoformat(event["date"])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if 0 <= (event_day - as_of_day).days <= 7:
+                    near.append(f"{event_day}: {str(event.get('event') or 'calendar event')[:160]}")
+            if near:
+                plan["checks"].append({"name": "calendar_event_near", "passed": False,
+                    "blocking": False, "detail": "; ".join(near[:12])
+                    + f" (issuer calendar verified {verified}; cached as of {collected})"})
+                if plan["status"] == "pass":
+                    plan["status"] = "warn"
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        pass
+    return plan
 
 
 def write_artifacts(report_dir, plan: Mapping[str, Any]) -> None:
@@ -840,6 +888,9 @@ def write_artifacts(report_dir, plan: Mapping[str, Any]) -> None:
         "generated_at": plan.get("generated_at"),
     }
     try:
+        if plan.get("market_snapshot"):
+            (report_dir / "market_snapshot.json").write_text(
+                json.dumps(plan["market_snapshot"], indent=2, ensure_ascii=False), encoding="utf-8")
         (report_dir / SIZING_FILENAME).write_text(
             json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
         (report_dir / DISCIPLINE_FILENAME).write_text(

@@ -23,11 +23,11 @@ def fetch(ticker, rng="3mo"):
     ts = res["timestamp"]
     q = res["indicators"]["quote"][0]
     rows = []
-    for t, o, h, l, c, v in zip(ts, q["open"], q["high"], q["low"], q["close"], q["volume"]):
+    for t, o, h, low, c, v in zip(ts, q["open"], q["high"], q["low"], q["close"], q["volume"], strict=False):
         if c is None:
             continue
         day = datetime.datetime.fromtimestamp(t, datetime.UTC).strftime("%Y-%m-%d")
-        rows.append((day, o, h, l, c, v))
+        rows.append((day, o, h, low, c, v))
     return rows
 
 
@@ -77,19 +77,19 @@ def main():
         print(f"WARNING: only {n} sessions fetched — SMA50/RSI/MACD may be unreliable (use --range 6mo)")
 
     e12, e26 = ema(closes, 12), ema(closes, 26)
-    macd = [a - b for a, b in zip(e12, e26)]
+    macd = [a - b for a, b in zip(e12, e26, strict=False)]
     sig = ema(macd, 9)
-    hist = [m - s for m, s in zip(macd, sig)]
+    hist = [m - s for m, s in zip(macd, sig, strict=False)]
     rsi = rsi_series(closes)
 
     print(f"{ticker} — as of {rows[-1][0]} (today's row live until market close)")
     print("date        open     high      low    close   volume   delta")
     for i in range(n - days, n):
-        d, o, h, l, c, v = rows[i]
+        d, o, h, low, c, v = rows[i]
         prev = closes[i - 1] if i > 0 else None
         delta = f"{(c / prev - 1) * 100:+.2f}%" if prev else "   --"
         vv = v if v is not None else 0
-        print(f"{d}  {o:8.2f} {h:8.2f} {l:8.2f} {c:8.2f} {vv:>9,.0f}  {delta}")
+        print(f"{d}  {o:8.2f} {h:8.2f} {low:8.2f} {c:8.2f} {vv:>9,.0f}  {delta}")
 
     i = n - 1
     sma20 = sum(closes[-20:]) / min(20, len(closes))

@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from tradingagents.dataflows import windows
-from tradingagents.dataflows import coverage, event_context
+from tradingagents.dataflows import coverage, event_context, windows
 from tradingagents.dataflows.errors import VendorNotConfiguredError, VendorUnavailableError
-
 
 # ---------------------------------------------------------------------------
 # Window arithmetic

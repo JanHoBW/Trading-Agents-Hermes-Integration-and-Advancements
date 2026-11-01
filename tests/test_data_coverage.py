@@ -14,7 +14,7 @@ import pytest
 
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.dataflows import coverage
-from tradingagents.dataflows.errors import VendorNotConfiguredError, VendorUnavailableError
+from tradingagents.dataflows.errors import VendorNotConfiguredError
 from tradingagents.reporting import write_report_tree
 
 

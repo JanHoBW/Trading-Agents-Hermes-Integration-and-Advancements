@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone as timezone
 
 import requests
 
@@ -183,7 +183,7 @@ def _format_report(
         else ""
     )
     latest_period, latest_value = filtered[-1]
-    retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    retrieved_at = datetime.now(UTC).isoformat(timespec="seconds")
     lines = [
         f"## {provider}: {label}",
         f"- Source: {provider} official statistical API",

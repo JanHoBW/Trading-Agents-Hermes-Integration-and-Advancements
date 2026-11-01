@@ -30,10 +30,6 @@ from tradingagents.dataflows.vendors.fred import get_macro_data as get_fred_macr
 from tradingagents.dataflows.vendors.issuer_facts import get_ir_facts
 from tradingagents.dataflows.vendors.issuer_ir import get_news_issuer_ir
 from tradingagents.dataflows.vendors.issuer_rss import get_news_issuer_rss
-from tradingagents.dataflows.vendors.ureg_pdmr import (
-    get_ureg_capital_market_disclosures,
-    get_ureg_pdmr_insider_transactions,
-)
 from tradingagents.dataflows.vendors.marketaux import get_news_marketaux
 from tradingagents.dataflows.vendors.news_supplement import get_news_supplement
 from tradingagents.dataflows.vendors.polymarket import (
@@ -43,6 +39,10 @@ from tradingagents.dataflows.vendors.sec_edgar import (
     get_balance_sheet as get_sec_edgar_balance_sheet,
     get_cashflow as get_sec_edgar_cashflow,
     get_income_statement as get_sec_edgar_income_statement,
+)
+from tradingagents.dataflows.vendors.ureg_pdmr import (
+    get_ureg_capital_market_disclosures,
+    get_ureg_pdmr_insider_transactions,
 )
 from tradingagents.dataflows.vendors.yahoo.fundamentals import (
     get_balance_sheet as get_yfinance_balance_sheet,

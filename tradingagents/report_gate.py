@@ -19,7 +19,8 @@ Blocking checks decide the status; warnings are reported but never flip it.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from tradingagents.dataflows import coverage
@@ -233,16 +234,19 @@ def run_quality_gate(report_dir) -> dict:
     blocking_failures = [c for c in checks if c["blocking"] and not c["passed"]]
     verdict = {
         "status": "NEEDS_REVIEW" if blocking_failures else "APPROVED",
+        "structural_status": "NEEDS_REVIEW" if blocking_failures else "APPROVED",
+        # Evidence is not a structural promise and never changes legacy status.
+        "evidence_status": "NEEDS_REVIEW" if gaps or not durable and directional
+                           or not methods else "RECORDED",
+        "trade_plan_status": (sizing or {}).get("verdict") or "NOT_RECORDED",
         "checks": checks,
         "gaps": gaps,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "report_dir": str(report_dir),
     }
-    try:
+    # A read-only results dir must not turn a finished run into a crash.
+    with suppress(OSError):
         (report_dir / GATE_FILENAME).write_text(
             json.dumps(verdict, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    except OSError:
-        # A read-only results dir must not turn a finished run into a crash.
-        pass
     return verdict

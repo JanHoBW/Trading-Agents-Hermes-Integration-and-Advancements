@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+import math
+from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Annotated
 
 import yfinance as yf
@@ -9,6 +11,7 @@ from tradingagents.dataflows.date_window import (
     withhold_undisclosed_trades,
 )
 from tradingagents.dataflows.errors import VendorUnavailableError
+from tradingagents.dataflows.fundamental_analytics import render_analytics
 from tradingagents.dataflows.net import vendor_reachable
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import (
@@ -104,13 +107,12 @@ def get_fundamentals(
     if quote_timestamp is not None:
         try:
             quote_timestamp = datetime.fromtimestamp(
-                float(quote_timestamp), tz=timezone.utc
+                float(quote_timestamp), tz=UTC
             ).isoformat()
         except (TypeError, ValueError, OSError, OverflowError):
             quote_timestamp = None
 
     revenue_growth = info.get("revenueGrowth")
-    analyst_target = info.get("targetMeanPrice")
 
     def money(key, currency):
         value = info.get(key)
@@ -169,7 +171,8 @@ def get_fundamentals(
     # instrument is treated as an ETF when Yahoo supplies a NAV or labels it
     # an exchange-traded fund — so it works for any listing, not one name.
     etf_lines: list[str] = []
-    if info.get("navPrice") is not None or (info.get("legalType") or "").lower().find("exchange traded fund") >= 0:
+    is_etf = info.get("quoteType") == "ETF" or info.get("navPrice") is not None or "exchange traded fund" in (info.get("legalType") or "").lower()
+    if is_etf:
         if info.get("navPrice") is not None:
             etf_lines.append(f"ETF NAV: {money('navPrice', quote)}")
         ner = info.get("netExpenseRatio")
@@ -182,10 +185,8 @@ def get_fundamentals(
             etf_lines.append(f"Total assets (approx): {info['totalAssets']}")
         inc = info.get("fundInceptionDate")
         if inc:
-            try:
-                etf_lines.append(f"Inception: {datetime.fromtimestamp(float(inc), tz=timezone.utc).date().isoformat()}")
-            except (TypeError, ValueError, OverflowError, OSError):
-                pass
+            with suppress(TypeError, ValueError, OverflowError, OSError):
+                etf_lines.append(f"Inception: {datetime.fromtimestamp(float(inc), tz=UTC).date().isoformat()}")
         if info.get("yield") is not None:
             etf_lines.append(f"Distribution yield: {float(info['yield']) * 100:.2f}%")
         for label, key in (("Legal type", "legalType"), ("Category", "category")):
@@ -228,6 +229,11 @@ def get_fundamentals(
         body += "\n\nETF profile note: values are Yahoo's live fund snapshot (NAV, TER, YTD return, AUM, inception) as of the quote time. Top holdings/positions are not provided by this vendor."
     if target_spread:
         body += "\n\nAnalyst consensus note: values are Yahoo's live aggregate of covering analysts as of the quote time — no per-house targets or as-of date. The spread is dispersion among analysts, not a range of scenarios."
+    if info.get("forwardEps") is not None or info.get("forwardPE") is not None:
+        body += "\nForward estimate year: UNKNOWN (provider does not specify; undated EPS must not be assigned to FY)"
+    body += "\nFundamental arithmetic unavailable: Yahoo supplies no matching period starts, durations or filing vintages for overview cash-flow and income fields."
+    body += "\n" + render_analytics([], as_of_date or datetime.now(UTC).date().isoformat(),
+                                    asset_type="etf" if is_etf else "equity")
     return f"# Company Fundamentals for {canonical}\n\n" + body
 
 
@@ -242,7 +248,27 @@ def _statement(ticker, freq, as_of_date, title, quarterly_attr, annual_attr) -> 
     data = yf_retry(lambda: getattr(yf.Ticker(canonical), attr))
     if data is None or data.empty:
         raise_for_empty(ticker, canonical, f"{what} data")
-    return f"# {title} data for {canonical} ({freq})\n" + data.to_csv()
+    records = []
+    for metric, row in data.iterrows():
+        if metric not in {"Operating Cash Flow", "Capital Expenditure", "Net Income", "Total Revenue", "Operating Income"}:
+            continue
+        for end, value in row.items():
+            try:
+                number = float(value)
+                if not math.isfinite(number):
+                    continue
+                period_end = end.date().isoformat()
+            except (TypeError, ValueError, AttributeError):
+                continue
+            records.append({"metric": "Revenue" if metric == "Total Revenue" else metric,
+                            "value": number, "end": period_end, "start": None,
+                            "unit": data.attrs.get("currency", "UNKNOWN"), "filed": None,
+                            "accession": None, "duration_days": None, "period_type": freq.lower(),
+                            "source": "yfinance", "perimeter": "unknown", "tax_basis": "unknown",
+                            "basis": "unknown", "capex_sign": "outflow_negative"})
+    return (f"# {title} data for {canonical} ({freq})\n" + data.to_csv()
+            + "# Period starts, durations, publication dates and filing vintages: UNKNOWN; no deterministic TTM or conversion inferred.\n"
+            + render_analytics(records, as_of_date or datetime.now(UTC).date().isoformat(), frequency=freq.lower()))
 
 
 def get_balance_sheet(

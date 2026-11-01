@@ -2,21 +2,19 @@
 import json
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
 
-from tradingagents.dataflows.errors import VendorUnavailableError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
+from tradingagents.dataflows.vendors.alpha_vantage import common, stock
 from tradingagents.dataflows.vendors.alpha_vantage.common import (
     AlphaVantagePremiumEndpointError,
     AlphaVantageRateLimitError,
 )
-from tradingagents.dataflows.vendors.alpha_vantage import stock
-from tradingagents.dataflows.vendors.alpha_vantage import common
 from tradingagents.dataflows.vendors.yahoo import market
-from tradingagents.dataflows.errors import NoMarketDataError
 
 
 class AlphaVantageFallbackTests(unittest.TestCase):
@@ -35,9 +33,8 @@ class AlphaVantageFallbackTests(unittest.TestCase):
         ticker = SimpleNamespace(history=lambda **kwargs: frame.copy())
         with patch.object(market.yf, "Ticker", return_value=ticker), patch.object(
             market, "yf_retry", side_effect=lambda func: func()
-        ):
-            with self.assertRaisesRegex(NoMarketDataError, "missing Close"):
-                market.get_YFin_data_online("RHM.DE", "2026-10-08", "2026-10-09")
+        ), self.assertRaisesRegex(NoMarketDataError, "missing Close"):
+            market.get_YFin_data_online("RHM.DE", "2026-10-08", "2026-10-09")
 
     def test_provider_symbol_comes_from_instrument_registry(self):
         registry = {
@@ -71,9 +68,8 @@ class AlphaVantageFallbackTests(unittest.TestCase):
 
         with patch.dict("os.environ", {"ALPHA_VANTAGE_API_KEY": "test-secret"}), patch.object(
             common, "get_scrubbed", return_value=Response()
-        ):
-            with self.assertRaises(AlphaVantagePremiumEndpointError) as raised:
-                common._make_api_request("TIME_SERIES_DAILY_ADJUSTED", {"symbol": "RHM.DEX"})
+        ), self.assertRaises(AlphaVantagePremiumEndpointError) as raised:
+            common._make_api_request("TIME_SERIES_DAILY_ADJUSTED", {"symbol": "RHM.DEX"})
         self.assertNotIsInstance(raised.exception, AlphaVantageRateLimitError)
 
     def test_adjusted_endpoint_premium_gate_falls_back_to_unadjusted_daily(self):
@@ -107,9 +103,8 @@ class AlphaVantageFallbackTests(unittest.TestCase):
             stock,
             "_make_api_request",
             side_effect=VendorUnavailableError("API request timed out"),
-        ) as request:
-            with self.assertRaisesRegex(VendorUnavailableError, "timed out"):
-                stock.get_stock("RHM.DEX", "2026-10-08", "2026-10-09")
+        ) as request, self.assertRaisesRegex(VendorUnavailableError, "timed out"):
+            stock.get_stock("RHM.DEX", "2026-10-08", "2026-10-09")
         request.assert_called_once()
 
 

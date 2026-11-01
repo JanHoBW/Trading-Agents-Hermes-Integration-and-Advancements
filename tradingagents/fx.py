@@ -11,11 +11,12 @@ missing, never bridged through a third currency that nobody verified.
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta as timedelta
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
 
 SCHEMA = "tradingagents.fx.v1"
 
@@ -87,10 +88,8 @@ def fetch_rate(base: str, quote: str, as_of: str) -> dict | None:
         return None
     stamp = str(as_of)
     if "Date" in frame.columns:
-        try:
+        with contextlib.suppress(Exception):  # the requested date stays the label
             stamp = str(frame["Date"].iloc[-1])[:10]
-        except Exception:  # noqa: BLE001 -- the requested date stays the label
-            pass
     return Rate(pair=pair_name(base, quote), base=base.upper(), quote=quote.upper(),
                 rate=close, as_of=stamp, source=f"yahoo/{symbol}").to_dict()
 
@@ -129,10 +128,8 @@ def resolve(
             cache[name] = fresh
             changed = True
     if changed and write:
-        try:
+        with contextlib.suppress(OSError):
             save_cache(cache, cache_path)
-        except OSError:
-            pass
     return cache
 
 

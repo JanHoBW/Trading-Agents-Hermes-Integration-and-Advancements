@@ -9,8 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from tradingagents.memory import TradingMemoryLog, settlement
-from tradingagents.memory import calibration, realized
+from tradingagents.memory import TradingMemoryLog, calibration, realized, settlement
 
 _SEP = TradingMemoryLog._SEPARATOR
 

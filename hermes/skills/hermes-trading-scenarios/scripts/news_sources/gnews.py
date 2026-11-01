@@ -50,7 +50,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone as timezone
 
 PROFILE_ENV = os.path.expanduser("~/.hermes/profiles/trading-agents/.env")
 CACHE_PATH = os.path.expanduser("~/.hermes/profiles/trading-agents/gnews/cache.jsonl")
@@ -107,7 +107,7 @@ def _norm_q(q):
 def _read_cache():
     try:
         with open(CACHE_PATH, encoding="utf-8") as f:
-            return [json.loads(l) for l in f if l.strip()]
+            return [json.loads(line) for line in f if line.strip()]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
@@ -121,7 +121,7 @@ def cache_lookup(q, lang, as_of, ttl):
     if not cands:
         return None
     best = max(cands, key=lambda e: e.get("fetched_at", ""))
-    age = (datetime.now(timezone.utc)
+    age = (datetime.now(UTC)
            - datetime.fromisoformat(best["fetched_at"])).total_seconds()
     if age > ttl:
         return None
@@ -199,9 +199,7 @@ def validate_item(it):
     """Schema v1 hard rules: https URL, date shape, non-empty title/url."""
     if not it["url"].startswith("https://") or not it["title"]:
         return False
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", it["published_at"]):
-        return False
-    return True
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", it["published_at"]))
 
 
 def write_snapshot(snap, out):
@@ -238,7 +236,7 @@ def cmd_fetch(args):
     as_of = datetime.strptime(args.date, "%Y-%m-%d")
     lang = resolve_lang(args.ticker, args.lang)
     query = (args.names[0] if args.names else args.ticker).strip()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     market_query = args.market_query or market_query_default(lang)
     queries = [query] + ([market_query] if args.with_market else [])
 
@@ -250,7 +248,7 @@ def cmd_fetch(args):
         else:
             d = gnews_query(q, key, args.window_days, as_of, lang=lang)
             cache_append({
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "fetched_at": datetime.now(UTC).isoformat(),
                 "q": q, "q_norm": _norm_q(q), "lang": lang,
                 "from": (as_of - timedelta(days=args.window_days)).isoformat(),
                 "to": as_of.isoformat(),
@@ -282,7 +280,7 @@ def cmd_refine(args):
     best = max(cands, key=lambda e: e.get("fetched_at", ""))
     print(f"[cache] q={args.q!r} ({best['fetched_at'][:16]}) — no API request", file=sys.stderr)
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     items, seen_urls, seen_titles = [], set(), set()
     for a in best.get("articles") or []:
         it = to_item(a, now_iso)

@@ -2,7 +2,6 @@ from datetime import date
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from tradingagents.dataflows import windows
 from tradingagents.agents.analysts.turn import take_turn
 from tradingagents.agents.context import (
     UNTRUSTED_DATA_PREAMBLE,
@@ -10,7 +9,6 @@ from tradingagents.agents.context import (
     get_language_instruction,
     wrap_untrusted,
 )
-from tradingagents.dataflows.event_context import build_event_context
 from tradingagents.agents.tools import (
     get_capital_market_disclosures,
     get_global_news,
@@ -19,6 +17,8 @@ from tradingagents.agents.tools import (
     get_news,
     get_prediction_markets,
 )
+from tradingagents.dataflows import windows
+from tradingagents.dataflows.event_context import build_event_context
 
 # The tools this analyst is offered; its tool node is built from the same tuple.
 TOOLS = (

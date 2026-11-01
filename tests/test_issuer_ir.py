@@ -128,7 +128,7 @@ def _run(monkeypatch, ir=None, articles=None, allowed=True, start="2026-10-01", 
                         lambda ticker: {"issuer": "Firma AG", "ticker": ticker, "ir": ir or _ir()})
     monkeypatch.setattr(issuer_ir, "_sitemap_urls", lambda sitemap: issuer_ir.parse_sitemap(URLSET))
     monkeypatch.setattr(issuer_ir, "_allowed", lambda url: allowed)
-    payload = articles or (lambda url: (f"Titel {url[-30:]}", "Text der Meldung.", 
+    payload = articles or (lambda url: (f"Titel {url[-30:]}", "Text der Meldung.",
                                         ["https://example.com/en/media/news-watch/news/2026/10/2026-10-08-firm-doubles-credit-facility"]))
     monkeypatch.setattr(issuer_ir, "fetch_article", payload)
     return issuer_ir.get_news_issuer_ir("TEST.DE", start, end)

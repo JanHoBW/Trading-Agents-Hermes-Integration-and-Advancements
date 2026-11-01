@@ -35,8 +35,8 @@ from tradingagents.agents.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
-from tradingagents.dataflows import windows
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows import windows
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
     DEFAULT_SUBREDDITS,

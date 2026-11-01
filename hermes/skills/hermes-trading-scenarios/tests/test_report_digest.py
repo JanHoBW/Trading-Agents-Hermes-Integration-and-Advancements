@@ -103,3 +103,24 @@ def test_the_text_summary_lists_warnings_without_prose(tmp_path, capsys):
     assert "Overweight" in out
     assert "source_mix" in out
     assert "Body text." not in out
+
+
+def test_digest_summarizes_price_replay_rows_without_losing_provenance(tmp_path):
+    run = _run(tmp_path)
+    path = run / 'reports' / 'sizing.json'
+    sizing = json.loads(path.read_text())
+    sizing['market_snapshot'] = {
+        'schema_version': 1, 'sha256': 'synthetic-digest',
+        'metadata': {'bar_status': 'unknown', 'price_adjustment': 'adjusted'},
+        'ohlcv': [{'Date': '2026-01-01', 'Close': 101.123456}] * 1250,
+    }
+    path.write_text(json.dumps(sizing))
+    got = digest_mod.build_digest(run, include_report=False)
+    snapshot = got['facts']['sizing']['market_snapshot']
+    assert 'ohlcv' not in snapshot
+    assert snapshot['row_count'] == 1250
+    assert snapshot['sha256'] == 'synthetic-digest'
+    assert snapshot['metadata']['bar_status'] == 'unknown'
+    assert snapshot['last_row']['Close'] == 101.123456
+    # Compaction applies only to the reader; the replay artifact stays complete.
+    assert len(json.loads(path.read_text())['market_snapshot']['ohlcv']) == 1250

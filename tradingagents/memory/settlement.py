@@ -8,8 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from tradingagents.dataflows.symbols import normalize_symbol
-from tradingagents.dataflows.vendors.yahoo.market import get_closes
-from tradingagents.dataflows.vendors.yahoo.market import PRICE_ADJUSTMENT
+from tradingagents.dataflows.vendors.yahoo.market import PRICE_ADJUSTMENT, get_closes
 
 logger = logging.getLogger(__name__)
 

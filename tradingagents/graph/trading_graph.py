@@ -14,12 +14,11 @@ from tradingagents.agents.rating import run_rating
 from tradingagents.dataflows import coverage
 from tradingagents.dataflows.config import run_config, run_config_context, set_config
 from tradingagents.dataflows.date_window import get_current_date, is_historical
+from tradingagents.dataflows.run_snapshot import market_snapshot_scope
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_tier_client, tier_provider
-from tradingagents.memory import TradingMemoryLog, settlement
-from tradingagents.memory import calibration
-from tradingagents.memory import realized
+from tradingagents.memory import TradingMemoryLog, calibration, realized, settlement
 from tradingagents.memory.reflection import Reflector
 from tradingagents.report_gate import run_quality_gate
 from tradingagents.reporting import write_report_tree
@@ -166,6 +165,7 @@ class TradingAgentsGraph:
             # before the Memory Log step would resume without the lessons.
             "analysts=parallel",
             "memory=parallel",
+            "market_snapshot=v1",
             f"settings={digest}",
         ])
 
@@ -338,7 +338,7 @@ class TradingAgentsGraph:
         # vendor call this run makes is attributed to it and nothing leaks in
         # from an earlier backtest iteration.
         coverage.reset()
-        return self.propagator.create_initial_state(
+        state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
@@ -346,6 +346,27 @@ class TradingAgentsGraph:
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
             portfolio_account=portfolio.model_dump(mode="json") if portfolio is not None else None,
         )
+        cfg = getattr(self, "config", {})
+        # The CLI builds initial state before opening its checkpointer. Do not
+        # warm new prices when the execution will use an existing checkpoint.
+        resuming = cfg.get("checkpoint_enabled") and checkpoint_step(
+            cfg["data_cache_dir"], company_name, str(trade_date),
+            self._run_signature(asset_type, portfolio)) is not None
+        if not resuming:
+            with run_config(cfg), market_snapshot_scope(company_name, trade_date):
+                state["market_levels"] = advisory.market_levels(company_name, trade_date)
+        return state
+
+    def _snapshot_scope(self, graph_input, args):
+        # A resumed checkpoint retains the original bars, not a fresh price.
+        state = graph_input
+        if state is None:
+            state = self.graph.get_state(args.get("config") or {}).values
+        if not state or not state.get("company_of_interest") or not state.get("trade_date"):
+            from contextlib import nullcontext
+            return nullcontext()
+        return market_snapshot_scope(state["company_of_interest"], state["trade_date"],
+                                     (state.get("market_levels") or {}).get("snapshot"))
 
     def _memory_step(self, state):
         """The graph's Memory Log step, alongside the analysts (#1428): settle every
@@ -480,7 +501,8 @@ class TradingAgentsGraph:
                 if state is not None:
                     final_state.update(state)
         else:
-            final_state = self.graph.invoke(graph_input, **args)
+            with self._snapshot_scope(graph_input, args):
+                final_state = self.graph.invoke(graph_input, **args)
 
         self.record_decision(company_name, trade_date, final_state)
 
@@ -505,6 +527,8 @@ class TradingAgentsGraph:
         # when the process-wide config has changed since. Each step runs in the
         # run's context, so the caller keeps its own between steps.
         context = run_config_context(self.config)
+        scope = self._snapshot_scope(graph_input, args)
+        context.run(scope.__enter__)
         stream = context.run(self.graph.stream, graph_input, subgraphs=True, **args)
         try:
             while (step := context.run(next, stream, None)) is not None:
@@ -518,7 +542,10 @@ class TradingAgentsGraph:
                 elif mode == "values":
                     yield chunk.get("messages", []), chunk
         finally:
-            context.run(stream.close)
+            try:
+                context.run(stream.close)
+            finally:
+                context.run(scope.__exit__, None, None, None)
 
     def _log_state(self, trade_date, final_state):
         """Write a run's final state to JSON under the run's own ticker."""

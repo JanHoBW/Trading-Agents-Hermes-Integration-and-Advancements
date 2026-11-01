@@ -40,7 +40,7 @@ from __future__ import annotations
 import csv
 import io
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone as timezone
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.date_window import (
@@ -252,7 +252,7 @@ def get_finnhub_insider_transactions(
             "FINNHUB_API_KEY environment variable is not set; "
             "add the key to the profile .env to enable the finnhub vendor"
         )
-    canonical = normalize_symbol(ticker)
+    _canonical = normalize_symbol(ticker)
     symbol = _finnhub_symbol(ticker)
     profile = _require_coverage(token, symbol, ticker)  # coverage gate
 
@@ -355,7 +355,7 @@ def get_news_finnhub(ticker: str, start_date: str, end_date: str) -> str:
     ``/company-news2``); articles are Yahoo-sourced and dated by publication
     time, so the window is applied in UTC.
     """
-    for label, value in (("start_date", start_date), ("end_date", end_date)):
+    for _label, value in (("start_date", start_date), ("end_date", end_date)):
         datetime.strptime(value, "%Y-%m-%d")  # ValueError on malformed dates
     if start_date > end_date:
         raise ValueError("start_date must not be after end_date")
@@ -384,7 +384,7 @@ def get_news_finnhub(ticker: str, start_date: str, end_date: str) -> str:
     def pub(item: dict) -> str:
         try:
             ts = int(item.get("datetime") or 0)
-            return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else ""
+            return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d") if ts else ""
         except (TypeError, ValueError, OverflowError):
             return ""
 
@@ -393,7 +393,7 @@ def get_news_finnhub(ticker: str, start_date: str, end_date: str) -> str:
         # window; it expects datetime objects, not date strings.
         try:
             ts = int(item.get("datetime") or 0)
-            return datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
+            return datetime.fromtimestamp(ts, tz=UTC) if ts else None
         except (TypeError, ValueError, OverflowError):
             return None
 

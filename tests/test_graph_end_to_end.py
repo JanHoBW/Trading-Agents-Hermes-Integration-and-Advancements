@@ -266,7 +266,13 @@ def test_an_analyst_that_keeps_calling_tools_writes_its_report_at_the_limit(tmp_
 
     assert len(model.tool_turns) == 3 * 3   # three tool-using analysts, three rounds each
     for key in ("market_report", "news_report", "fundamentals_report"):
-        assert final_state[key] == TEXT
+        if key == "fundamentals_report":
+            # The LLM report still terminates at the limit; the new code-written
+            # arithmetic block is appended separately and must remain present.
+            assert final_state[key].startswith(TEXT + "\n\n## Deterministic fundamental analytics")
+            assert "# FUNDAMENTAL_ANALYTICS: " in final_state[key]
+        else:
+            assert final_state[key] == TEXT
     assert rating == "Overweight"
 
 

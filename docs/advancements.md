@@ -14,12 +14,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## 2026-11-01 — Cost policy and input/evaluation integrity
+
+- Wrapper v2.9.0: credential-free local run defaults, exact `--copilot-model=`,
+  Copilot medium effort and 1/1 debate/risk defaults; explicit local/custom/quick
+  choices remain available. No cloud consent is distributed in the repository.
+- Replay ID schema 2 includes actual quick/deep model configuration, input
+  content hashes and analysis windows. It identifies inputs, not model output.
+- Calibration counts decisions separately from horizon/realized outcomes;
+  ticker/date duplicates are not new evidence, the configured anchor is honored,
+  historical window/realized dates are filtered individually, and Hold is not a
+  directional success. No memory storage migration.
+- IR evidence now filters publications/reference dates at `as_of`, preserves
+  explicit raise/cut/confirm direction, and separates dated release facts from
+  annual overview figures. German Umsatz-Erwartung reductions are recognized.
+  Schema-1 facts snapshots preserve per-figure publication/reference/source/basis,
+  release evidence and guidance objects across producer and consumer, rejecting
+  future evidence at both boundaries. See [IR integrity](ir-factual-integrity.md),
+  [transport contract](ir-snapshot-transport.md) and [source pilot](ir-adapter-pilot.md).
+- SEC cumulative cashflow is converted to standalone fiscal quarters; incomplete
+  or nonconsecutive LTM inputs are withheld. Deterministic arithmetic records
+  period/basis gaps and enters the existing fundamentals role without another
+  model request: [fundamental analytics](fundamental-analytics.md).
+- Yahoo run-local price artifacts unify snapshot/CSV/indicator/sizing inputs;
+  Hold is NO_TRADE, exits need no entry stop, and structure/evidence/trade-plan
+  gates are separated: [run-snapshot integrity](run-snapshot-integrity.md).
+- Configured-benchmark empirical factor fits enter the existing market snapshot
+  through one optional Yahoo batch, never an invented duration or causal rate
+  forecast: [factor integration](factor-risk-integration.md). Raw factor bars
+  are not archived; result hashes/reuse are not complete evidence replay.
+- The digest summarizes stored price history instead of sending years of OHLCV
+  to the auditing model; full replay rows remain on disk.
+- Strict CI lint cleanup preserves explicit compatibility re-exports and
+  formerly shadowed duplicate test coverage; no lint configuration was weakened.
+- Details, verification contract and limitations: [cost/run policy](cost-run-policy.md).
+
 ## Architecture of the fork additions
 
 The fork is organized as a thin set of layers around the unmodified upstream
-pipeline. Nothing in the fork touches the LangGraph node logic itself — every
-addition plugs in at a seam (vendor chain, config key, LLM factory, memory
-log format, CLI subcommand).
+pipeline. Additions use existing seams (vendor chain, config, LLM factory,
+existing analyst context, run state, memory log and CLI). The fork extends graph
+initialization/context propagation and the existing Memory Log step, but the
+audit-integrity/factor changes introduce no new LLM agent nodes.
 
 ```
  ┌──────────────────────────────────────────────────────────────────────────┐

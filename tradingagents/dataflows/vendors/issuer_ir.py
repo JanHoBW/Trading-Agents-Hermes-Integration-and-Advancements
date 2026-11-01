@@ -29,12 +29,13 @@ not independent corroboration.
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import re
 import urllib.robotparser as robotparser
 import xml.etree.ElementTree as ET
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone as timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -165,7 +166,7 @@ def _cached_sitemap(url: str) -> str:
     """The sitemap body, cached for a day; gzip is detected by magic bytes."""
     cache = _cache_dir() / (hashlib.sha256(url.encode()).hexdigest()[:16] + ".xml")
     try:
-        if cache.is_file() and (datetime.now(timezone.utc).timestamp() - cache.stat().st_mtime) < SITEMAP_CACHE_SECONDS:
+        if cache.is_file() and (datetime.now(UTC).timestamp() - cache.stat().st_mtime) < SITEMAP_CACHE_SECONDS:
             return cache.read_text(encoding="utf-8", errors="replace")
     except OSError:
         pass
@@ -181,10 +182,8 @@ def _cached_sitemap(url: str) -> str:
         except OSError as exc:
             raise VendorUnavailableError(f"issuer sitemap is not valid gzip: {exc}") from None
     text = raw.decode("utf-8", errors="replace")
-    try:
+    with contextlib.suppress(OSError):  # a cache miss must never fail the call
         cache.write_text(text, encoding="utf-8")
-    except OSError:
-        pass  # a cache miss must never fail the call
     return text
 
 

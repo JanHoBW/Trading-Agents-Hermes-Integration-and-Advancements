@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone as timezone
 from email.utils import parsedate_to_datetime
-from pathlib import Path
-from urllib.parse import urlparse
+from pathlib import Path as Path
+from urllib.parse import urlparse as urlparse
 
 import requests
 
@@ -54,8 +54,8 @@ def _published_date(value: str) -> date | None:
         except (TypeError, ValueError, OverflowError):
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).date()
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).date()
     except (TypeError, ValueError, OverflowError):
         return None
 

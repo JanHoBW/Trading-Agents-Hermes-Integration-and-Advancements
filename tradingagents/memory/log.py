@@ -751,10 +751,8 @@ class TradingMemoryLog:
             part = part.strip()
             if not part:
                 continue
-            try:
+            with contextlib.suppress(ValueError):
                 vals.append(int(part))
-            except ValueError:
-                pass
         return vals or None
 
     @staticmethod
@@ -940,7 +938,8 @@ class TradingMemoryLog:
         bits = []
         for h in sorted(horizons):
             v = horizons[h] or {}
-            raw = v.get("raw"); alpha = v.get("alpha")
+            raw = v.get("raw")
+            alpha = v.get("alpha")
             raw_s = f"{raw:+.1%}" if isinstance(raw, (int, float)) else "n/a"
             alpha_s = f"{alpha:+.1%}" if isinstance(alpha, (int, float)) else "n/a"
             bits.append(f"{h}d {raw_s}/α{alpha_s}")

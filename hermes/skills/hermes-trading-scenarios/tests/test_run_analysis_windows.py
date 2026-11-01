@@ -7,7 +7,7 @@ provenance so a run's horizons are auditable after the fact.
 import importlib.util
 import os
 import unittest
-from argparse import Namespace
+from argparse import ArgumentTypeError, Namespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -71,7 +71,7 @@ class WindowFlagTests(unittest.TestCase):
 
     def test_window_validation_rejects_out_of_range_and_garbage(self):
         for raw in ("0", "-5", "731", "abc"):
-            with self.subTest(raw=raw), self.assertRaises(Exception):
+            with self.subTest(raw=raw), self.assertRaises(ArgumentTypeError):
                 run_analysis.positive_days(raw)
         self.assertEqual(run_analysis.positive_days("180"), 180)
 

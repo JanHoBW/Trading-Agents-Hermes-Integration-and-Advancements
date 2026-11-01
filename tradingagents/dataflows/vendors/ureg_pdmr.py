@@ -37,7 +37,7 @@ import requests
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import (
-    NoMarketDataError,
+    NoMarketDataError as NoMarketDataError,
     VendorNotConfiguredError,
     VendorUnavailableError,
 )
@@ -133,8 +133,8 @@ def _load_instrument(ticker: str) -> dict:
         raise VendorNotConfiguredError(f"issuer registry not found: {path}")
     try:
         registry = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        raise VendorNotConfiguredError(f"issuer registry unreadable: {path}")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise VendorNotConfiguredError(f"issuer registry unreadable: {path}") from exc
     instruments = registry.get("instruments", {}) if isinstance(registry, dict) else {}
     if not isinstance(instruments, dict):
         raise VendorNotConfiguredError("issuer registry 'instruments' must be a JSON object")

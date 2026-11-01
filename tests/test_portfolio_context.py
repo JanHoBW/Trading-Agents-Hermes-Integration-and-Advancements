@@ -284,7 +284,7 @@ def test_a_book_without_equity_still_validates():
 
 
 @pytest.mark.unit
-def test_partial_portfolio_states_only_what_it_was_given():
+def test_partial_portfolio_states_only_what_it_was_given_equity_omitted():
     """Equity omitted is not equity zero; the line is absent rather than invented."""
     text = PortfolioContext.model_validate({"cash": 1000.0}).render("AAPL")
     assert "equity" not in text.lower()

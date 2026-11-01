@@ -19,8 +19,8 @@ SPEC.loader.exec_module(run_analysis)
 
 
 def _args(**kw):
-    base = dict(ticker="RHM.DE", date="2026-10-21", analysts="market,news,fundamentals,social",
-                debate_rounds=3, risk_rounds=2, llm="lmstudio")
+    base = {"ticker": "RHM.DE", "date": "2026-10-21", "analysts": "market,news,fundamentals,social",
+            "debate_rounds": 3, "risk_rounds": 2, "llm": "lmstudio"}
     base.update(kw)
     return Namespace(**base)
 

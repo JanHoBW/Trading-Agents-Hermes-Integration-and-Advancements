@@ -9,7 +9,6 @@ import pytest
 
 from tradingagents import report_gate
 
-
 REPORT_BODY = "# RHM.DE\n\n" + ("Analysis text with numbers and dates. " * 120) + "\n"
 DECISION = "**Rating**: Buy\n\nPositionsgröße ...\n"
 

@@ -16,8 +16,17 @@ import pandas as pd
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.run_snapshot import (
+    frozen_rows,
+    market_snapshot_scope as market_snapshot_scope,
+)
 from tradingagents.dataflows.symbols import normalize_symbol
-from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
+
+
+def load_ohlcv(symbol, as_of_date, fill_gaps=True):
+    # Preserve this vendor-injection seam while resolving the current loader.
+    from tradingagents.dataflows.vendors.yahoo import ohlcv
+    return ohlcv.load_ohlcv(symbol, as_of_date, fill_gaps=fill_gaps)
 
 # Weekly indicators need ~35 bars (MACD 26 + signal 9) before stockstats returns
 # numbers; below that the section says so instead of rendering NaNs.
@@ -43,7 +52,7 @@ def _verified_rows(symbol: str, as_of_date: str) -> pd.DataFrame:
     """
     # As reported: this snapshot is quoted by the agents as exact prices, so a
     # gap-filled cell would put the previous session's number under this date.
-    data = load_ohlcv(symbol, as_of_date, fill_gaps=False)
+    data = frozen_rows(symbol, as_of_date, loader=load_ohlcv)
     if data is None or data.empty:
         raise NoMarketDataError(symbol, normalize_symbol(symbol), "no price rows")
 
@@ -157,6 +166,11 @@ def build_verified_market_snapshot(
         "",
         f"- Requested analysis date: {as_of_date}",
         f"- Latest trading row used: {latest_date}",
+        f"- Bar status: {df.attrs.get('bar_status', 'unknown')}",
+        f"- Venue timezone: {df.attrs.get('venue_timezone') or 'unknown'}",
+        f"- Quote timestamp: {df.attrs.get('quote_timestamp') or 'unknown'}",
+        f"- Snapshot sha256: {df.attrs.get('sha256') or 'not recorded'}",
+        "- Trading row dates are session labels, not verified quote timestamps.",
         "- Rows after the requested analysis date are excluded before verification.",
         "",
         "### Latest verified OHLCV row",
@@ -192,4 +206,12 @@ def build_verified_market_snapshot(
         "percentage moves unless directly supported by tool output with concrete "
         "dates and prices.",
     ]
+    from tradingagents.dataflows.run_snapshot import snapshot_artifact
+    artifact = snapshot_artifact()
+    if (artifact and artifact.get("metadata", {}).get("symbol") == symbol.upper()
+            and artifact.get("factor_risk")):
+        from tradingagents.dataflows.factor_risk import render_factor_risk
+        lines.extend(["", render_factor_risk(artifact["factor_risk"])])
+    if artifact and artifact.get("metadata", {}).get("factor_risk_error"):
+        lines.append("- Factor risk unavailable: " + artifact["metadata"]["factor_risk_error"])
     return "\n".join(lines)

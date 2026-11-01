@@ -277,7 +277,7 @@ def cmd_fetch(args) -> None:
 
     as_of = dt.date.fromisoformat(args.date)
     start = as_of - dt.timedelta(days=args.window_days)
-    retrieved = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    retrieved = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
     items: list[dict] = []
     seen_urls: set[str] = set()

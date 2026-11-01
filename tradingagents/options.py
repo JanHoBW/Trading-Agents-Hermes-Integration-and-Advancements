@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from datetime import date
-from typing import Callable
 
 OCC_PATTERN = re.compile(r"^(?P<root>[A-Z]{1,6})(?P<date>\d{6})(?P<side>[CP])(?P<strike>\d{8})$")
 DEFAULT_MULTIPLIER = 100.0

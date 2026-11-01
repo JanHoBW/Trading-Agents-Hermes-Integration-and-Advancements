@@ -27,7 +27,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from news_sources import dpa, gnews, de_feeds  # noqa: E402
+from news_sources import de_feeds, dpa, gnews  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -57,7 +57,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     de_snap = work / "de_snap.json"
 
     names = args.names or []
-    log(f">> dpa collect (best-effort, Cache-Fallback)")
+    log(">> dpa collect (best-effort, Cache-Fallback)")
     run_stage("dpa collect", dpa, ["collect"])
 
     dpa_argv = ["snapshot", "--ticker", args.ticker, "--date", args.date,
@@ -68,7 +68,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         dpa_argv += ["--isin", args.isin]
     if not args.no_market:
         dpa_argv += ["--with-market"]
-    log(f">> dpa snapshot")
+    log(">> dpa snapshot")
     run_stage("dpa snapshot", dpa, dpa_argv)
 
     g_argv = ["fetch", "--ticker", args.ticker, "--date", args.date,
@@ -78,7 +78,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         g_argv += ["--names", *names]
     if not args.no_market:
         g_argv += ["--with-market"]
-    log(f">> gnews fetch")
+    log(">> gnews fetch")
     run_stage("gnews fetch", gnews, g_argv)
 
     de_argv = ["fetch", "--ticker", args.ticker, "--date", args.date,
@@ -87,7 +87,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                "--fach-max", str(args.fach_max),
                "--forum-max", str(args.forum_max),
                "--out", str(de_snap)]
-    log(f">> de_feeds fetch (Portale + Foren)")
+    log(">> de_feeds fetch (Portale + Foren)")
     run_stage("de_feeds fetch", de_feeds, de_argv)
 
     inputs = [p for p in (dpa_snap, gnews_snap, de_snap) if p.is_file() and p.stat().st_size > 2]

@@ -205,7 +205,7 @@ def get_news_marketaux(ticker: str, start_date: str, end_date: str) -> str:
             "add the token to the profile .env to enable the marketaux news vendor"
         )
 
-    for label, value in (("start_date", start_date), ("end_date", end_date)):
+    for _label, value in (("start_date", start_date), ("end_date", end_date)):
         datetime.strptime(value, "%Y-%m-%d")  # ValueError on malformed dates
     if start_date > end_date:
         raise ValueError("start_date must not be after end_date")

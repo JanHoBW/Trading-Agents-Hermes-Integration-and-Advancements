@@ -12,7 +12,11 @@ from tradingagents.graph.propagation import Propagator
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.memory import TradingMemoryLog, settlement
 from tradingagents.memory.reflection import (
-    LESSON_KEYS, Lesson, Reflector, parse_lesson, render_lesson,
+    LESSON_KEYS,
+    Lesson,
+    Reflector,
+    parse_lesson,
+    render_lesson,
 )
 
 _SEP = TradingMemoryLog._SEPARATOR

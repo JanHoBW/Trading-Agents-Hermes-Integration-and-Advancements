@@ -3,7 +3,7 @@
 
 Usage:
   run_analysis.py run TICKER [DATE]          News pipeline + full run (lmstudio xhigh,
-                                             3/2 rounds, ~3-4 h)
+                                             1/1 rounds; optional local run policy)
   run_analysis.py run TICKER [DATE] --quick  Local swift model (swift-1.5-qwen3.8-27b),
                                              low effort, 1/1 round (~30-90 min)
   run_analysis.py news TICKER [DATE]         Build only the news supplement
@@ -32,13 +32,14 @@ Flags for run (all optional; equals form --flag=value, space form is a hard erro
 
 Pass-through flags (special cases):
   --analysts LIST        Default market,news,fundamentals,social
-  --debate-rounds N      Default 3 (--quick: 1) — an explicit value beats --quick
+  --debate-rounds N      Default 1 — an explicit value beats local policy
   --risk-rounds N        Default 2 (--quick: 1)
   --timeout N            Default 14400 (seconds)
   --lmstudio-model M     Model pin (A/B runs; also overrides the quick model)
   --weber-model M        Model pin (A/B runs)
+  --copilot-model M      Exact GitHub model ID (default gpt-6-luna)
   --reasoning-effort X   Reasoning effort for lmstudio (default xhigh, quick: low) and
-                         custom (only when set); minimal|low|medium|high|xhigh
+                         custom (only when set), copilot (default medium); minimal|low|medium|high|xhigh
   --suffix S             Output dir suffix <DATE>-<S> (A/B runs, retries)
   --supplement FILE      Existing supplement instead of the pipeline
   --dry-run              Show the child command only (no news build, no LLM call)
@@ -59,10 +60,24 @@ The script re-execs itself under the fork's venv python when started with a fore
 interpreter, so plain `python3 run_analysis.py ...` works from anywhere.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, json, os, re, shlex, shutil, subprocess, sys, time
-from pathlib import Path
-from urllib.parse import urlparse
+
+import argparse
+import contextlib
+import datetime as dt
+import hashlib
 import ipaddress
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import NoReturn
+from urllib.parse import urlparse
+
 from dotenv import dotenv_values
 
 NEWS_SUPPLEMENT_MAX_ITEMS = 30    # bounded evidence snapshot, matches the news_supplement vendor
@@ -78,16 +93,16 @@ VALUE_FLAGS = {"--llm", "--api-url", "--model", "--portfolio", "--analysts",
                "--debate-rounds", "--risk-rounds", "--timeout", "--lmstudio-model",
                "--weber-model", "--reasoning-effort", "--suffix", "--supplement",
                "--custom-api-key-env", "--output-dir", "--lmstudio-url", "--weber-url",
-               "--news-window-days", "--event-window-days"}
+               "--news-window-days", "--event-window-days", "--copilot-model"}
 
 # --quick profile: the local swift model with a minimal thinking budget, 1/1 rounds.
 QUICK_LLM_MODEL = os.environ.get("TA_QUICK_MODEL") or "swift-1.5-qwen3.8-27b"
 QUICK_REASONING_EFFORT = "low"
 
-WRAPPER_VERSION = "2.8.0"
+WRAPPER_VERSION = "2.9.0"
 
 
-def fail(message: str, code: int = 2) -> None:
+def fail(message: str, code: int = 2) -> NoReturn:
     print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
     raise SystemExit(code)
 
@@ -95,7 +110,7 @@ def iso_date(value: str) -> str:
     try:
         return dt.date.fromisoformat(value).isoformat()
     except ValueError:
-        raise argparse.ArgumentTypeError("date must be YYYY-MM-DD")
+        raise argparse.ArgumentTypeError("date must be YYYY-MM-DD") from None
 
 def ticker(value: str) -> str:
     value = value.strip().upper()
@@ -115,7 +130,7 @@ def rounds(value: str) -> int | None:
     try:
         n = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError("rounds must be an integer")
+        raise argparse.ArgumentTypeError("rounds must be an integer") from None
     if not 1 <= n <= 5:
         raise argparse.ArgumentTypeError("rounds must be between 1 and 5 (recursion-limit budget)")
     return n
@@ -141,7 +156,7 @@ def portfolio_file(value: str) -> str:
         import json as _json
         _json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
-        raise argparse.ArgumentTypeError(f"portfolio file is not valid JSON: {exc}")
+        raise argparse.ArgumentTypeError(f"portfolio file is not valid JSON: {exc}") from None
     return str(path)
 
 def validate_supplement(path: str, ticker: str, as_of: str) -> None:
@@ -154,7 +169,7 @@ def validate_supplement(path: str, ticker: str, as_of: str) -> None:
     try:
         data = json.loads(Path(path).read_bytes())
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"news supplement is not valid JSON: {exc}")
+        raise ValueError(f"news supplement is not valid JSON: {exc}") from None
     if data.get("schema_version") != 1:
         raise ValueError("schema_version must be 1")
     if data.get("ticker") != ticker:
@@ -235,19 +250,44 @@ def effective_effort(env: dict[str, str]) -> str:
     return value or "provider-default"
 
 
-def replay_id(a, profile: str, prompts: dict[str, str], effort: str = "provider-default") -> str:
-    """A short digest of everything that decides what this run should produce.
-
-    Inputs + rounds + backend/model + reasoning effort + prompt hashes: two runs
-    with the same id made the same decisions from the same evidence, which is
-    what makes a report auditable and a re-run reproducible.
-    """
+def replay_id(a, profile: str, prompts: dict[str, str], effort: str = "provider-default", *, env=None) -> str:
+    """Input fingerprint only: identical IDs never guarantee identical LLM output."""
     parts = {
+        "schema": 2,
         "ticker": a.ticker, "date": a.date,
         "analysts": a.analysts.split(",") if isinstance(a.analysts, str) else list(a.analysts),
         "debate_rounds": a.debate_rounds, "risk_rounds": a.risk_rounds,
         "llm_profile": profile, "reasoning_effort": effort, "prompts": prompts,
+        "model_pins": {k: getattr(a, k, None) for k in
+                       ("copilot_model", "custom_model", "lmstudio_model", "weber_model")},
+        "input_files": {},
     }
+    selected = env if env is not None else os.environ
+    keys = ("TRADINGAGENTS_LLM_PROVIDER", "TRADINGAGENTS_QUICK_THINK_PROVIDER",
+            "TRADINGAGENTS_DEEP_THINK_PROVIDER", "TRADINGAGENTS_QUICK_THINK_LLM",
+            "TRADINGAGENTS_DEEP_THINK_LLM", "TRADINGAGENTS_LLM_BACKEND_URL",
+            "TRADINGAGENTS_LANGUAGE", "TRADINGAGENTS_OUTPUT_LANGUAGE",
+            "TRADINGAGENTS_QUICK_THINK_BACKEND_URL", "TRADINGAGENTS_DEEP_THINK_BACKEND_URL",
+            "TRADINGAGENTS_FACTOR_RISK_ENABLED", "TRADINGAGENTS_BENCHMARK_TICKER",
+            "TRADINGAGENTS_EVALUATION_HORIZONS",
+            "TRADINGAGENTS_MIN_REWARD_RISK", NEWS_WINDOW_ENV, EVENT_WINDOW_ENV, EVENT_CONTEXT_ENV)
+    parts["effective_config"] = {k: selected.get(k) for k in keys}
+    registry = selected.get("TRADINGAGENTS_ISSUER_REGISTRY") or str(Path.home() / ".tradingagents" / "german_equities.json")
+    try:
+        parts["issuer_registry_sha256"] = hashlib.sha256(Path(registry).expanduser().read_bytes()).hexdigest()
+    except OSError:
+        parts["issuer_registry_sha256"] = "unavailable"
+    parts["windows"] = {k: getattr(a, k, None) for k in
+                        ("news_window_days", "event_window_days", "no_event_context")}
+    for field in ("news_supplement", "portfolio"):
+        raw = getattr(a, field, None)
+        if raw:
+            try:
+                parts["input_files"][field] = hashlib.sha256(Path(raw).expanduser().read_bytes()).hexdigest()
+            except OSError:
+                parts["input_files"][field] = "unavailable"
+        else:
+            parts["input_files"][field] = None
     payload = json.dumps(parts, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
 
@@ -438,10 +478,10 @@ def _resolve_profile(name: str) -> dict[str, str]:
             "TRADINGAGENTS_LLM_PROVIDER": "openai",
             "TRADINGAGENTS_QUICK_THINK_PROVIDER": "openai",
             "TRADINGAGENTS_DEEP_THINK_PROVIDER": "openai",
-            "TRADINGAGENTS_QUICK_THINK_LLM": "gpt-6-luna",
-            "TRADINGAGENTS_DEEP_THINK_LLM": "gpt-6-luna",
+            "TRADINGAGENTS_QUICK_THINK_LLM": os.environ.get("COPILOT_MODEL") or "gpt-6-luna",
+            "TRADINGAGENTS_DEEP_THINK_LLM": os.environ.get("COPILOT_MODEL") or "gpt-6-luna",
             "TRADINGAGENTS_LLM_BACKEND_URL": "https://api.githubcopilot.com",
-            "TRADINGAGENTS_OPENAI_REASONING_EFFORT": "high",
+            "TRADINGAGENTS_OPENAI_REASONING_EFFORT": os.environ.get("COPILOT_REASONING_EFFORT") or "medium",
         }
     if name == "lmstudio":
         # unsloth/qwen3.8-27b is a thinking model: LM Studio honours
@@ -817,10 +857,8 @@ def write_provenance(out: Path, payload: dict) -> Path:
     """Write ``provenance.json`` into the run dir (mode 600: it names endpoints)."""
     prov = out / "provenance.json"
     prov.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    try:
+    with contextlib.suppress(OSError):
         prov.chmod(0o600)
-    except OSError:
-        pass
     return prov
 
 
@@ -983,8 +1021,7 @@ def refresh_book(book: dict) -> dict:
     """
     summary: dict = {"instruments": 0, "pairs": [], "error": None}
     try:
-        from tradingagents import fx as _fx
-        from tradingagents import instruments as _instruments
+        from tradingagents import fx as _fx, instruments as _instruments
 
         keys = [str(p.get("ticker")) for p in book.get("positions") or [] if p.get("ticker")]
         _instruments.resolve(keys, symbol_lookup=_instruments.yahoo_symbol,
@@ -1289,8 +1326,48 @@ def positive_days(raw: str) -> int:
     return value
 
 
+def load_run_defaults() -> dict:
+    """Local, credential-free run policy. No cloud consent is shipped in code."""
+    path = Path(os.environ.get("TRADINGAGENTS_RUN_DEFAULTS") or
+                Path.home() / ".tradingagents" / "run_defaults.json").expanduser()
+    if not path.exists():
+        return {}
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        fail(f"invalid run defaults: {type(exc).__name__}")
+    allowed = {"llm", "allow_copilot", "copilot_model", "reasoning_effort", "debate_rounds", "risk_rounds"}
+    if not isinstance(policy, dict) or set(policy) - allowed:
+        fail("invalid run defaults: unknown fields")
+    for key in ("debate_rounds", "risk_rounds"):
+        if key in policy and (type(policy[key]) is not int or not 1 <= policy[key] <= 5):
+            fail(f"invalid run defaults: {key} must be 1..5")
+    if "llm" in policy and policy["llm"] not in LLM_CHAIN + ["auto"]:
+        fail("invalid run defaults: unsupported llm")
+    if "allow_copilot" in policy and type(policy["allow_copilot"]) is not bool:
+        fail("invalid run defaults: allow_copilot must be boolean")
+    if "copilot_model" in policy and (not isinstance(policy["copilot_model"], str) or
+                                      not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", policy["copilot_model"])):
+        fail("invalid run defaults: invalid copilot_model")
+    if "reasoning_effort" in policy and policy["reasoning_effort"] not in {"minimal", "low", "medium", "high", "xhigh"}:
+        fail("invalid run defaults: invalid reasoning_effort")
+    return policy
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """`run TICKER [DATE]`: validate, build the news supplement, launch the run."""
+    policy = load_run_defaults()
+    # Explicit backend/custom/quick selections do not inherit another backend's
+    # model or effort. Rounds can still be overridden independently.
+    inherit_backend = not (args.llm or args.api_url or args.quick)
+    for key in ("debate_rounds", "risk_rounds"):
+        if getattr(args, key, None) is None and key in policy:
+            setattr(args, key, policy[key])
+    if inherit_backend:
+        for key in ("llm", "reasoning_effort", "copilot_model"):
+            if getattr(args, key, None) is None and key in policy:
+                setattr(args, key, policy[key])
+        args.allow_copilot = bool(args.allow_copilot or policy.get("allow_copilot", False))
     if args.bg and args.ui:
         fail("--ui und --bg schließen sich aus (Fenster braucht eine offene Interaktion)")
     # The flag is the per-run consent for a fork-only, ToS-gray endpoint; it is
@@ -1316,6 +1393,11 @@ def cmd_run(args: argparse.Namespace) -> None:
                 print(f">> Buchdaten: {summary['error']}", file=sys.stderr)
 
     # --- LLM flag validation (ta.sh messages, now in one place) --------------
+    if getattr(args, "copilot_model", None):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", args.copilot_model):
+            fail("--copilot-model: invalid literal model ID")
+        if args.api_url or args.quick or args.llm not in (None, "copilot", "auto"):
+            fail("--copilot-model requires the copilot or auto backend")
     if bool(args.api_url) != bool(args.model):
         fail("--api-url und --model müssen zusammen gesetzt werden")
     if args.api_url:
@@ -1349,26 +1431,30 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     # --- LLM selection (ta.sh logic) ------------------------------------------
     # --api-url → custom profile; --llm=NAME → forced; --quick → local swift
-    # model with low effort + 1/1 rounds; otherwise lmstudio xhigh 3/2.
-    debate = args.debate_rounds if args.debate_rounds is not None else (1 if args.quick else 3)
-    risk = args.risk_rounds if args.risk_rounds is not None else (1 if args.quick else 2)
+    # model with low effort + 1/1 rounds; otherwise lmstudio xhigh 1/1 (local policy can select another backend).
+    debate = args.debate_rounds if args.debate_rounds is not None else 1
+    risk = args.risk_rounds if args.risk_rounds is not None else 1
 
-    spec = dict(
-        ticker=ticker, date=date, analysts=args.analysts, output_dir=out,
-        timeout=args.timeout, news_supplement=news_out, portfolio=args.portfolio,
-        dry_run=args.dry_run, ui=args.ui, debate_rounds=debate, risk_rounds=risk,
-        llm="lmstudio", lmstudio_url=None, weber_url=None,
-        lmstudio_model=None, weber_model=None,
-        custom_api_url=None, custom_model=None,
-        lmstudio_reasoning_effort=None, custom_reasoning_effort=None,
-        custom_api_key_env=args.custom_api_key_env,
-    )
+    spec = {
+        "ticker": ticker, "date": date, "analysts": args.analysts, "output_dir": out,
+        "timeout": args.timeout, "news_supplement": news_out, "portfolio": args.portfolio,
+        "dry_run": args.dry_run, "ui": args.ui, "debate_rounds": debate, "risk_rounds": risk,
+        "llm": "lmstudio", "lmstudio_url": None, "weber_url": None,
+        "lmstudio_model": None, "weber_model": None,
+        "custom_api_url": None, "custom_model": None,
+        "lmstudio_reasoning_effort": None, "custom_reasoning_effort": None,
+        "custom_api_key_env": args.custom_api_key_env,
+        "copilot_model": getattr(args, "copilot_model", None),
+        "copilot_reasoning_effort": None,
+    }
     if args.api_url:
         spec.update(llm="custom", custom_api_url=args.api_url, custom_model=args.model)
         if args.reasoning_effort:
             spec["custom_reasoning_effort"] = args.reasoning_effort
     elif args.llm:
         spec["llm"] = args.llm
+        if args.llm == "copilot":
+            spec["copilot_reasoning_effort"] = args.reasoning_effort or "medium"
         if args.reasoning_effort and args.llm == "lmstudio":
             spec["lmstudio_reasoning_effort"] = args.reasoning_effort
     elif args.quick:
@@ -1398,6 +1484,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         for flag, val in (("--llm", args.llm), ("--api-url", args.api_url), ("--model", args.model),
                           ("--reasoning-effort", args.reasoning_effort),
                           ("--lmstudio-model", args.lmstudio_model), ("--weber-model", args.weber_model),
+                          ("--copilot-model", getattr(args, "copilot_model", None)),
                           ("--analysts", None if args.analysts == "market,news,fundamentals,social" else args.analysts),
                           ("--debate-rounds", str(debate) if args.debate_rounds is not None else None),
                           ("--risk-rounds", str(risk) if args.risk_rounds is not None else None),
@@ -1454,6 +1541,10 @@ def execute_run(a: argparse.Namespace) -> None:
         os.environ["CUSTOM_LLM_REASONING_EFFORT"] = a.custom_reasoning_effort
     if a.custom_api_key_env:
         os.environ["CUSTOM_LLM_API_KEY_ENV"] = a.custom_api_key_env
+    if getattr(a, "copilot_model", None):
+        os.environ["COPILOT_MODEL"] = a.copilot_model
+    if getattr(a, "copilot_reasoning_effort", None):
+        os.environ["COPILOT_REASONING_EFFORT"] = a.copilot_reasoning_effort
 
     if a.llm == "auto":
         chain = [c for c in LLM_CHAIN if _profile_precheck(c)[0]]
@@ -1496,7 +1587,8 @@ def execute_run(a: argparse.Namespace) -> None:
         result.update({"dry_run": True, "llm": chain[0],
                        "llm_backend_url": first.get("TRADINGAGENTS_LLM_BACKEND_URL"),
                        "llm_model": first.get("TRADINGAGENTS_QUICK_THINK_LLM")})
-        print(json.dumps(result, indent=2, ensure_ascii=False)); return
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
 
     if a.ui:
         # Same pipeline, same env — but on a real TTY in its own window so the
@@ -1550,21 +1642,15 @@ def execute_run(a: argparse.Namespace) -> None:
             if v:
                 gt_env[k] = v
         started = time.time()
-        try:
+        with contextlib.suppress(OSError):
             exit_file.unlink()
-        except OSError:
-            pass
         subprocess.run(["gnome-terminal", "--title", title, "--geometry", "170x48",
                         "--wait", "--", "bash", "-c", script], env=gt_env)
         rc = None
-        try:
+        with contextlib.suppress(OSError, ValueError):
             rc = int(exit_file.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            pass
-        try:
+        with contextlib.suppress(OSError):
             exit_file.unlink()
-        except OSError:
-            pass
         files = report_files(out)
         matrix = read_coverage_matrix(out)
         # An audit trail is the point: without this, a --ui run (the default
@@ -1573,8 +1659,8 @@ def execute_run(a: argparse.Namespace) -> None:
             "wrapper_version": WRAPPER_VERSION, "ui": True,
             "timed_out": False, "partial": rc not in (0, None),
             "returncode": rc,
-            "started_utc": dt.datetime.fromtimestamp(started, dt.timezone.utc).isoformat(),
-            "finished_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "started_utc": dt.datetime.fromtimestamp(started, dt.UTC).isoformat(),
+            "finished_utc": dt.datetime.now(dt.UTC).isoformat(),
             "ticker": a.ticker, "analysis_date": a.date,
             "analysts": a.analysts.split(','),
             "debate_rounds": a.debate_rounds, "risk_rounds": a.risk_rounds,
@@ -1592,7 +1678,7 @@ def execute_run(a: argparse.Namespace) -> None:
             "advisory": read_advisory(out),
             "prompt_versions": prompts,
             "analysis_windows": analysis_windows_summary(run_date(a)),
-            "replay_id": replay_id(a, prof, prompts, effort),
+            "replay_id": replay_id(a, prof, prompts, effort, env=env),
             "copilot_enabled": _copilot_allowed(),
             "copilot_tos_note": COPILOT_TOS_NOTE if prof == "copilot" else None,
             "console_output": "tty (--ui); no tradingagents.log — see the saved report tree",
@@ -1635,13 +1721,13 @@ def execute_run(a: argparse.Namespace) -> None:
         log_text = "STDOUT\n" + _to_text(cp.stdout) + "\nSTDERR\n" + _to_text(cp.stderr)
         log = out / "tradingagents.log"
         log.write_text(log_text, encoding="utf-8")
-        try: log.chmod(0o600)
-        except OSError: pass
+        with contextlib.suppress(OSError):
+            log.chmod(0o600)
         # Per-attempt copy so earlier attempts stay diagnosable after the chain moves on.
         attempt_log = out / f"tradingagents.{prof}.log"
         attempt_log.write_text(log_text, encoding="utf-8")
-        try: attempt_log.chmod(0o600)
-        except OSError: pass
+        with contextlib.suppress(OSError):
+            attempt_log.chmod(0o600)
         files = report_files(out)
         data_coverage = build_data_coverage(log_text)
         # The report's own matrix (routing-layer records) beats the log view:
@@ -1660,7 +1746,7 @@ def execute_run(a: argparse.Namespace) -> None:
         if cp.returncode == 0:
             prov = out / "provenance.json"
             provenance={"wrapper_version":WRAPPER_VERSION,"timed_out":False,"partial":False,
-                        "started_utc":dt.datetime.fromtimestamp(started,dt.timezone.utc).isoformat(),"finished_utc":dt.datetime.now(dt.timezone.utc).isoformat(),
+                        "started_utc":dt.datetime.fromtimestamp(started,dt.UTC).isoformat(),"finished_utc":dt.datetime.now(dt.UTC).isoformat(),
                         "ticker":a.ticker,"analysis_date":a.date,"analysts":a.analysts.split(','),
                         "debate_rounds":a.debate_rounds,"risk_rounds":a.risk_rounds,"news_supplement":a.news_supplement,
                         "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
@@ -1670,7 +1756,7 @@ def execute_run(a: argparse.Namespace) -> None:
                         "quality_gate": read_quality_gate(out),
                         "advisory": read_advisory(out),
                         "analysis_windows": analysis_windows_summary(run_date(a)),
-                        "replay_id":replay_id(a,prof,prompts,effort),
+                        "replay_id":replay_id(a,prof,prompts,effort,env=env),
                         "reasoning_effort":effort,
                         "copilot_enabled":_copilot_allowed(),
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
@@ -1679,13 +1765,14 @@ def execute_run(a: argparse.Namespace) -> None:
                            "attempts": attempts, "report_files": files, "data_coverage": data_coverage,
                            "quality_gate": read_quality_gate(out),
                            "advisory": read_advisory(out)})
-            print(json.dumps(result, indent=2, ensure_ascii=False)); return
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return
         # Failed. If it looks like an LLM-backend fault and backends remain, fall back.
         if fallback_reason and idx < len(chain) - 1:
             continue
         prov = out / "provenance.json"
         provenance={"wrapper_version":WRAPPER_VERSION,"timed_out":timed_out,"partial":timed_out or cp.returncode != 0,
-                    "started_utc":dt.datetime.fromtimestamp(started,dt.timezone.utc).isoformat(),"finished_utc":dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "started_utc":dt.datetime.fromtimestamp(started,dt.UTC).isoformat(),"finished_utc":dt.datetime.now(dt.UTC).isoformat(),
                     "ticker":a.ticker,"analysis_date":a.date,"analysts":a.analysts.split(','),
                     "debate_rounds":a.debate_rounds,"risk_rounds":a.risk_rounds,"news_supplement":a.news_supplement,
                     "llm_profile":prof,"llm_model":llm_defaults.get("TRADINGAGENTS_QUICK_THINK_LLM"),
@@ -1693,7 +1780,7 @@ def execute_run(a: argparse.Namespace) -> None:
                     "llm_chain":chain,"attempts":attempts,
                     "command":cmd,"report_files":files,"data_coverage":data_coverage,"prompt_versions": prompts,
                         "analysis_windows": analysis_windows_summary(run_date(a)),
-                        "replay_id":replay_id(a,prof,prompts,effort),
+                        "replay_id":replay_id(a,prof,prompts,effort,env=env),
                         "reasoning_effort":effort,
                         "copilot_enabled":_copilot_allowed(),
                         "copilot_tos_note":COPILOT_TOS_NOTE if prof == "copilot" else None}
@@ -1745,7 +1832,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Run in der vollen Framework-TUI in einem eigenen gnome-terminal-Fenster (nicht mit --bg kombinierbar)")
     pr.add_argument("--dry-run", action="store_true", help="nur das Child-Command anzeigen (kein News-Build, kein LLM-Call)")
     pr.add_argument("--llm", choices=["auto", "copilot", "lmstudio", "webercloud"], default=None,
-                    help="Backend erzwingen; Default: lmstudio (--quick: swift low)")
+                    help="Backend erzwingen; Default: lokale Run-Policy, sonst lmstudio (--quick: swift low)")
     pr.add_argument("--allow-copilot", action="store_true",
                     help="Copilot-Backend für diesen Lauf freischalten (Fork-only, ToS-Grauzone; Default: aus)")
     pr.add_argument("--api-url", default=None,
@@ -1755,13 +1842,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON mit AKTUELLEN Holdings+Cash (PortfolioContext); "
                          "'equity' nötig für die deterministische Positionsgröße")
     pr.add_argument("--analysts", type=analysts, default="market,news,fundamentals,social")
-    pr.add_argument("--debate-rounds", type=rounds, default=None, help="Default 3 (--quick: 1); explizit gesetzt schlägt --quick")
-    pr.add_argument("--risk-rounds", type=rounds, default=None, help="Default 2 (--quick: 1); explizit gesetzt schlägt --quick")
+    pr.add_argument("--debate-rounds", type=rounds, default=None, help="Default 1; explizit gesetzt überschreibt lokale Policy")
+    pr.add_argument("--risk-rounds", type=rounds, default=None, help="Default 1; explizit gesetzt überschreibt lokale Policy")
     pr.add_argument("--timeout", type=int, default=14400, help="Sekunden (60..14400)")
     pr.add_argument("--lmstudio-model", default=None, help="Modell-Pin (A/B-Runs; überschreibt auch das quick-Modell)")
     pr.add_argument("--weber-model", default=None, help="Modell-Pin (A/B-Runs)")
+    pr.add_argument("--copilot-model", default=None, help="GitHub-Modell-ID (Default gpt-6-luna)")
     pr.add_argument("--reasoning-effort", choices=["minimal", "low", "medium", "high", "xhigh"], default=None,
-                    help="Reasoning-Effort für lmstudio (Default xhigh, quick: low) und custom (nur wenn gesetzt)")
+                    help="Effort: Copilot medium, lmstudio xhigh/quick low, custom nur wenn gesetzt")
     pr.add_argument("--suffix", type=suffix_value, default=None, help="Output-Dir-Suffix <DATE>-<S> (A/B-Runs, Retries)")
     pr.add_argument("--supplement", type=supplement, default=None, help="bestehendes Supplement statt Pipeline")
     pr.add_argument("--output-dir", default=None, help="Output-Verzeichnis überschreiben (Default: ~/.tradingagents/reports/trading-scenarios/<TICKER>/<DATE>[-<SUFFIX>])")
@@ -1815,4 +1903,5 @@ def main() -> None:
     args.func(args)
 
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
