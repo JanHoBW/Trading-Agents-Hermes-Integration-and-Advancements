@@ -62,6 +62,15 @@ Do not use it for order execution, portfolio custody, tax advice, or personalize
   every live vendor. Calibration counts decisions separately from outcomes;
   Hold is not a directional forecast, and future horizon dates are filtered.
 - Source of truth and regression contract: `docs/cost-run-policy.md` in the fork.
+- For **framework verification pilots without a private book**, use an isolated
+  `HOME`, `TRADINGAGENTS_MEMORY_LOG_PATH` and `TRADINGAGENTS_CACHE_DIR`. Keep
+  `HERMES_HOME` pointed at the authorized credential profile and supply the public
+  issuer registry explicitly. Pin model/effort/consent/rounds on the CLI because
+  an isolated HOME does not load the usual local run-defaults file. Omitting
+  `--portfolio` alone is insufficient: the default realized-trades CSV is still
+  under HOME. Verify empty account/position fields, real exit code and a nonzero
+  count of matching provenance report hashes; structural APPROVED can coexist
+  with evidence NEEDS_REVIEW and is not a quality or investment-edge proof.
   Older dated timing examples below retain historical 3/2 measurements; those
   numbers are not today's defaults.
 
