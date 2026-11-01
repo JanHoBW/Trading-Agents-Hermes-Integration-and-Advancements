@@ -99,11 +99,16 @@ tradingagents --ticker SAP.DE --date 2026-10-15 --analysts market,news,fundament
 ```
 
 The saved report lands in
-`~/.tradingagents/logs/reports/SAP.DE_<timestamp>/` — a stable, predictable
-path an agent can read back without shell history. A run also settles every
-logged decision whose window has passed (for any ticker), so memory upkeep
-rides along with each analysis. `settle_all_pending()` does the same without
-an analysis, for a scheduled job.
+`~/.tradingagents/reports/trading-scenarios/<TICKER>/<DATE>/` (one directory
+per run: `reports/` holds the stage files, `complete_report.md`/`.html`,
+`quality_gate.json`, `sizing.json`, `discipline.json` and `data_coverage.json`;
+`provenance.json` sits at the run-directory level) — a stable, predictable path
+an agent can read back without shell history. Read it through
+`scripts/report_digest.py`, which prints the code-written artifacts as facts and
+the report body as quoted data, rather than reading the prose as instructions.
+A run also settles every logged decision whose window has passed (for any
+ticker), so memory upkeep rides along with each analysis.
+`settle_all_pending()` does the same without an analysis, for a scheduled job.
 
 ## 6. Memory that compounds
 

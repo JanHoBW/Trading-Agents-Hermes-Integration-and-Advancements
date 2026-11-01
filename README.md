@@ -38,9 +38,10 @@
 > - **Multi-horizon decision memory** — per-ticker log with configurable windows (default 5/21/63/126 trading days), calibration stats, realized-P&L from a manual portfolio CSV; decisions scored from the first close after each decision (upstream #1518)
 > - **Memory v2** — structured lessons (stable JSON keys with prose fallback) and a **human feedback loop**: `tradingagents memory feedback` records your verdict on any call, and it reaches the portfolio manager on the very next run
 > - **LLM plumbing** — request timeout, `reasoning_effort` forwarding, custom OpenAI-compatible endpoints (local thinking models + a fork-only Copilot endpoint), plus upstream v0.7.0's ChatGPT plan sign-in
+> - **Prompt-injection hardening** — every prompt states that vendor text is data, every tool result and quoted block arrives in an `<untrusted-source>` delimiter, the social feeds and the memory log are bounded, and the report names the class of each source (`official` / `first_party` / `aggregator` / `social`) with a `source_mix` gate warning when a directional call has no durable source behind it
 >
 > **Architecture in one glance** (full version: [`docs/advancements.md`](docs/advancements.md#architecture-of-the-fork-additions)):
-> wrapper/CLI → upstream multi-agent pipeline (two model tiers: deep managers, quick analysts) → the fork's seams: a DE/EU vendor chain in `dataflows/`, the `tradingagents/memory/` subsystem (log · settlement · reflection · calibration · realized), and the LLM factory chain (Copilot → LM-Studio → Weber-Cloud). Every addition plugs in at a seam — the LangGraph nodes are untouched, and old memory entries still parse.
+> wrapper/CLI → upstream multi-agent pipeline (two model tiers: deep managers, quick analysts) → the fork's seams: a DE/EU vendor chain in `dataflows/`, the `tradingagents/memory/` subsystem (log · settlement · reflection · calibration · realized), the LLM factory chain (Copilot → LM-Studio → Weber-Cloud), and one instruction-hierarchy seam (`agents/context.py` + the graph's tool node). Every addition plugs in at a seam — the LangGraph nodes are untouched, and old memory entries still parse.
 >
 > **How to use this fork:**
 > 1. Clone this repo and install as described below (`uv venv`, `uv pip install -e ".[dev]"`)
@@ -51,7 +52,7 @@
 > **Working with a Hermes agent:**
 > The package has no Hermes dependency — integration happens at the process level. A Hermes agent *profile* owns a clone of this repo and wraps it (launcher script, skill, archive). All credentials and LLM configuration live in the profile's `.env`, which the app picks up automatically. The agent runs the analysis unattended (`tradingagents --ticker SAP.DE --save --no-show`), reads the generated HTML report, and files it away. Because the fork's memory (evaluation log, calibration stats, realized P&L) persists under `~/.tradingagents`, the same agent can pick up a trade in a later session and reflect on how its earlier calls played out.
 >
-> Full how-to (home layout, `portfolio.csv`, memory, testing): [`docs/hermes-integration.md`](docs/hermes-integration.md)
+> Full how-to (home layout, `portfolio.csv`, memory, testing): [`docs/hermes-integration.md`](docs/hermes-integration.md). When an agent reads a finished run, `scripts/report_digest.py` prints the code-written artifacts as facts and the report as quoted data — the report is never the source of truth for a rating or a size.
 >
 > **Upstream PRs:** [#1529](https://github.com/TauricResearch/TradingAgents/pull/1529) data layer · [#1530](https://github.com/TauricResearch/TradingAgents/pull/1530) LLM plumbing · [#1531](https://github.com/TauricResearch/TradingAgents/pull/1531) memory — merge status is tracked in the advancement log.
 
