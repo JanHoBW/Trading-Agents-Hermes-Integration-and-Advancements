@@ -1,6 +1,7 @@
 from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
+    UNTRUSTED_DATA_PREAMBLE,
     get_portfolio_context_from_state,
     get_sizing_context_from_state,
     opponent_argument_or_opening,
@@ -49,7 +50,7 @@ Here is the current conversation history: {history} Here are the last arguments 
 
 Engage actively by addressing any specific concerns raised, refuting the weaknesses in their logic, and asserting the benefits of risk-taking to outpace market norms. Maintain a focus on debating and persuading, not just presenting data. Challenge each counterpoint to underscore why a high-risk approach is optimal. Output conversationally as if you are speaking without any special formatting.
 
-""" + RISK_QUANTIFICATION + get_language_instruction()
+""" + RISK_QUANTIFICATION + " " + UNTRUSTED_DATA_PREAMBLE + get_language_instruction()
 
         response = llm.invoke(prompt)
 

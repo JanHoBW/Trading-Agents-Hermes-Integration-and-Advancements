@@ -778,13 +778,21 @@ class TestPortfolioManagerInjection:
     # PM prompt
 
     def test_pm_prompt_includes_past_context(self):
+        """The memory reaches the PM as a JSON value, not as a bullet list.
+
+        JSON escaping keeps a stored newline inside the string, so a poisoned
+        annotation cannot open a new prompt section (see tests/test_prompt_injection.py).
+        """
+        import json as _json
+
         captured = {}
         llm = _structured_pm_llm(captured)
         pm_node = create_portfolio_manager(llm)
         state = _make_pm_state(past_context="[2026-01-05 | NVDA | Buy | +5.0% | +2.0% | 5d]\nGreat call.")
         pm_node(state)
-        assert "Lessons from prior decisions and outcomes" in captured["prompt"]
+        assert "prior decisions and outcomes" in captured["prompt"]
         assert "Great call." in captured["prompt"]
+        assert _json.dumps({"past_context": state["past_context"]}, ensure_ascii=False) in captured["prompt"]
 
     def test_pm_no_past_context_no_section(self):
         """PM prompt omits the lessons section entirely when past_context is empty."""

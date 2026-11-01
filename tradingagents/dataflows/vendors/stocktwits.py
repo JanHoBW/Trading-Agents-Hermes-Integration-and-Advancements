@@ -19,6 +19,7 @@ import html
 import http.client
 import json
 import logging
+import re
 from datetime import datetime
 from urllib.request import Request, urlopen
 
@@ -28,6 +29,13 @@ from tradingagents.dataflows.symbols import crypto_base
 logger = logging.getLogger(__name__)
 
 _API = "https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
+
+# Prompt-budget caps, same rule as the Reddit vendor: the stream is
+# attacker-controlled free text, so count and length are bounded before it can
+# reach a prompt, and links are removed.
+MAX_ITEMS = 10
+MAX_ITEM_CHARS = 500
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _UA = "tradingagents/0.2 (+https://github.com/TauricResearch/TradingAgents)"
 
 
@@ -60,6 +68,15 @@ def _body(message) -> str:
     return html.unescape(message.get("body") or "")
 
 
+def _plain(text: str, limit: int = MAX_ITEM_CHARS) -> str:
+    """One bounded line, links removed, for quoting into a prompt."""
+    cleaned = _URL_RE.sub(" ", str(text or ""))
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1].rstrip() + "…"
+    return cleaned
+
+
 def _stocktwits_symbol(ticker: str) -> str:
     """Map a crypto pair to StockTwits' ``<BASE>.X`` convention.
 
@@ -73,7 +90,7 @@ def _stocktwits_symbol(ticker: str) -> str:
 
 def fetch_stocktwits_messages(
     ticker: str,
-    limit: int = 30,
+    limit: int = MAX_ITEMS,
     timeout: float = 10.0,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -129,15 +146,15 @@ def fetch_stocktwits_messages(
 
     lines = []
     bullish = bearish = unlabeled = 0
-    for m in messages[:limit]:
+    # The cap is the min of the caller's ask and the prompt budget: a caller
+    # cannot raise it, and `limit` alone does not bound what reaches the model.
+    for m in messages[: min(int(limit), MAX_ITEMS)]:
         created = m.get("created_at", "")
         user = (m.get("user") or {}).get("username", "?")
         entities = m.get("entities") or {}
         sentiment_obj = entities.get("sentiment") or {}
         sentiment = sentiment_obj.get("basic") if isinstance(sentiment_obj, dict) else None
-        body = _body(m).replace("\n", " ").strip()
-        if len(body) > 280:
-            body = body[:280] + "…"
+        body = _plain(_body(m), MAX_ITEM_CHARS)
 
         if sentiment == "Bullish":
             bullish += 1
@@ -148,7 +165,7 @@ def fetch_stocktwits_messages(
         else:
             unlabeled += 1
             tag = "no-label"
-        lines.append(f"[{created} · @{user} · {tag}] {body}")
+        lines.append(f"[stocktwits @{user} · {created} · {tag}] {body}")
 
     total = bullish + bearish + unlabeled
     bull_pct = round(100 * bullish / total) if total else 0

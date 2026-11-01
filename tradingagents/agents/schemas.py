@@ -258,6 +258,18 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    key_sources: str | None = Field(
+        default=None,
+        description=(
+            "The inputs that decided this call, one per line, each tagged with "
+            "its source class — official (regulator/exchange register), "
+            "first_party (the issuer itself), aggregator (news/fundamentals "
+            "feed), social (user-generated posts). Name only sources that "
+            "actually appear in the coverage block above. If no official or "
+            "first_party source supports the call, write exactly that instead "
+            "of omitting the field."
+        ),
+    )
 
     @field_validator("price_target", mode="before")
     @classmethod
@@ -285,6 +297,9 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
     parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
+    # Always rendered: a directional call with no durable source is a fact the
+    # reader needs, so "not provided" is a finding, not an empty field.
+    parts.extend(["", f"**Key Sources**: {decision.key_sources or 'not provided'}"])
     return "\n".join(parts)
 
 

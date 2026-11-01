@@ -9,6 +9,61 @@ from pathlib import Path
 from tradingagents.agents.rating import parse_rating
 from tradingagents.dataflows.files import locked
 
+# The memory log is the one input that survives a run, so its free text is
+# capped on the way in AND on the way out: a poisoned annotation or lesson must
+# not be able to grow into a prompt-shaping block, however often it is re-read.
+MAX_FEEDBACK_CHARS = 500
+MAX_LESSON_FIELD_CHARS = 400
+MAX_PAST_CONTEXT_CHARS = 4000
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse to a single bounded line: no newlines, no control characters.
+
+    A stored annotation is rendered into a model prompt. ``"\n\n- SYSTEM: …"``
+    inside a note would otherwise break out of the block it is quoted in and
+    read as an instruction from the operator, so the stored value carries no
+    line structure at all.
+    """
+    cleaned = " ".join(str(text or "").split())
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1].rstrip() + "…"
+    return cleaned
+
+
+def _clean_lesson(data: dict) -> dict | None:
+    """Keep only the structured lesson's known keys, normalised and bounded.
+
+    The log is a file on disk; a block edited or appended by anything other than
+    ``parse_lesson`` reached the prompt unchanged before this. A fixed key set
+    with type-checked values means an unexpected key (``"system_prompt"``,
+    ``"rating"``) can never be carried into the Portfolio Manager's context.
+    """
+    from tradingagents.memory.reflection import LESSON_KEYS
+
+    lesson: dict = {}
+    for key in ("these_claim", "vorhersage", "outcome_evidenz", "lektion"):
+        if key in LESSON_KEYS:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                lesson[key] = _one_line(value, MAX_LESSON_FIELD_CHARS)
+    if "konfidenz" in LESSON_KEYS:
+        try:
+            value = float(data.get("konfidenz"))
+        except (TypeError, ValueError):
+            value = None
+        if value is not None:
+            lesson["konfidenz"] = min(max(value, 0.0), 1.0)
+    if "horizonte" in LESSON_KEYS:
+        raw = data.get("horizonte")
+        if isinstance(raw, list):
+            horizons = sorted({int(h) for h in raw
+                               if isinstance(h, (int, float)) and 0 < h <= 3650})
+            if horizons:
+                lesson["horizonte"] = horizons
+    return lesson or None
+
 
 class TradingMemoryLog:
     """Append-only markdown log of trading decisions and reflections."""
@@ -207,7 +262,11 @@ class TradingMemoryLog:
         if cross:
             parts.append("Recent cross-ticker lessons:")
             parts.extend(self._format_reflection_only(e) for e in cross)
-        return "\n\n".join(parts)
+        text = "\n\n".join(parts)
+        if len(text) > MAX_PAST_CONTEXT_CHARS:
+            text = (text[:MAX_PAST_CONTEXT_CHARS].rsplit("\n", 1)[0].rstrip()
+                    + f"\n\n_(memory context truncated at {MAX_PAST_CONTEXT_CHARS} characters)_")
+        return text
 
     # --- Settle: record a decision's outcome and reflection ---
 
@@ -411,12 +470,13 @@ class TradingMemoryLog:
         block. Re-annotating replaces the previous annotation; writing the
         identical one again is a no-op. Returns whether the log changed.
         """
-        if not self._log_path or not self._log_path.exists() or not note.strip():
+        note = _one_line(note, MAX_FEEDBACK_CHARS)
+        if not self._log_path or not self._log_path.exists() or not note:
             return False
         payload = {"datum": feedback_date or date.today().isoformat()}
         if rating:
-            payload["bewertung"] = rating
-        payload["vermerk"] = note.strip()
+            payload["bewertung"] = _one_line(rating, 40)
+        payload["vermerk"] = note
         line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         suffix = "\n\nHUMAN_FEEDBACK:\n" + line
         with locked(self._log_path):
@@ -714,14 +774,20 @@ class TradingMemoryLog:
 
     @staticmethod
     def _parse_lesson_json(body: str | None) -> dict | None:
-        """Parse a REFLECTION_JSON line into the structured-lesson dict."""
+        """Parse a REFLECTION_JSON line into the structured-lesson dict.
+
+        Only the documented lesson keys survive; values are re-normalised here
+        because this reads a file, not the model's validated answer.
+        """
         if body is None:
             return None
         try:
             data = json.loads(body.strip())
         except (ValueError, AttributeError, TypeError):
             return None
-        return data if isinstance(data, dict) and data else None
+        if not isinstance(data, dict) or not data:
+            return None
+        return _clean_lesson(data)
 
     @staticmethod
     def _parse_json_line(body: str | None) -> dict | None:

@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage
 
 from tradingagents import advisory
 from tradingagents.agents.context import (
+    UNTRUSTED_DATA_PREAMBLE,
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
@@ -59,6 +60,7 @@ def create_trader(llm):
                     "or a range; convert a percentage distance to the price level it "
                     "implies, or omit the field if you cannot state a number. "
                     + NO_EXTERNAL_TOOLS
+                    + " " + UNTRUSTED_DATA_PREAMBLE
                     + get_language_instruction()
                 ),
             },

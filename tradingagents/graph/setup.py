@@ -50,6 +50,43 @@ def _tools_or_done(state) -> str:
     return "tools" if state["messages"][-1].tool_calls else END
 
 
+def _untrusted_tool_node(tools):
+    """A ``ToolNode`` whose results reach the model as marked data, never as prose.
+
+    Tool output is where vendor text enters the prompt: a headline, a filing
+    excerpt, a forum post. Nothing about that text is trustworthy — it is
+    written by whoever controls the source — so every non-empty result is
+    wrapped in the same ``<untrusted-source>`` delimiter the agents' prompt
+    explains. One seam here covers every analyst: the alternative, wrapping in
+    each of the fifteen tool functions, drifts the moment a tool is added.
+
+    ``ToolNode`` is kept for the call mechanics (argument parsing, error
+    handling, one ToolMessage per call); only the message text is rewritten.
+    """
+    from langchain_core.messages import ToolMessage
+
+    from tradingagents.agents.context import wrap_untrusted
+
+    node = ToolNode(list(tools))
+
+    def run(state):
+        result = node.invoke(state)
+        messages = (result or {}).get("messages") or []
+        rewritten = [
+            message.model_copy(update={
+                "content": wrap_untrusted(
+                    f"{message.name or 'tool'} result",
+                    message.content if isinstance(message.content, str) else str(message.content),
+                )
+            })
+            if isinstance(message, ToolMessage) else message
+            for message in messages
+        ]
+        return {**result, "messages": rewritten}
+
+    return run
+
+
 def _analyst_graph(spec, agent, max_tool_rounds: int):
     """One analyst as a graph of its own: the model and its tools, on a private message history.
 
@@ -82,7 +119,7 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
                        spec.agent_node, max_tool_rounds, repeated)
         return agent({**state, "messages": [*state["messages"], HumanMessage(WRAP_UP)]})
 
-    graph.add_node("tools", ToolNode(list(spec.tools)))
+    graph.add_node("tools", _untrusted_tool_node(spec.tools))
     graph.add_node("wrap_up", wrap_up)
     graph.add_conditional_edges("agent", _tools_or_done, ["tools", END])
     graph.add_conditional_edges("tools", more_or_wrap_up, ["agent", "wrap_up"])

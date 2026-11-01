@@ -8,6 +8,8 @@ the wiring: a restructure that drops a node, a tool or an edge fails here.
 from __future__ import annotations
 
 import copy
+import json
+import re
 import time
 
 import pandas as pd
@@ -328,7 +330,11 @@ def test_past_decisions_settle_alongside_the_analysts(tmp_path, monkeypatch, off
     lessons = graph.memory_log.get_past_context("NVDA", as_of=TRADE_DATE)
     assert lessons
     pm_prompt = next(c[1] for c in model.seen if c[0] == "Portfolio Manager")
-    assert lessons in pm_prompt
+    # Rendered as a JSON value: the memory is quoted data, so its own newlines
+    # stay inside the string instead of opening new prompt sections.
+    block = re.search(r'\{"past_context": "(?:[^"\\]|\\.)*"\}', pm_prompt)
+    assert block, "the PM prompt carries no JSON memory block"
+    assert json.loads(block.group(0))["past_context"].startswith("Past analyses of NVDA")
 
 
 @pytest.mark.unit

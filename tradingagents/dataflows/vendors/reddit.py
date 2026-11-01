@@ -67,6 +67,17 @@ def _coverage_dates(posts) -> list:
     return dates
 
 
+# Prompt-budget caps. A social feed is attacker-controlled free text: the cost
+# of an injected instruction is paid in tokens, so both the item count and the
+# per-item length are bounded here rather than trusted to the model.
+MAX_ITEMS = 10
+MAX_ITEM_CHARS = 500
+
+# Anything that looks like a link: the model does not need to follow it, and a
+# URL is the cheapest way to smuggle a directive past a length cap ("see
+# instructions at ..."). Removed before the excerpt is rendered.
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
 _RSS = "https://www.reddit.com/r/{sub}/search.rss?{qs}"
 # A descriptive, identified User-Agent (per Reddit's API etiquette). Reddit
 # blocks generic/anonymous tokens like bare "Mozilla/5.0" or "curl/…" but
@@ -156,6 +167,22 @@ def _iso_to_timestamp(iso_str: str | None) -> float | None:
         return datetime.fromisoformat(normalized).timestamp()
     except (ValueError, TypeError):
         return None
+
+
+def _plain(text: str, limit: int = MAX_ITEM_CHARS) -> str:
+    """Free text reduced to one bounded line with no links.
+
+    Social posts are quoted into a prompt: newlines let a post imitate a new
+    section, links move the model off the provided evidence, and unbounded
+    length makes an injected instruction likelier to survive.
+    """
+    if limit <= 0:
+        return ""
+    cleaned = _URL_RE.sub(" ", str(text or ""))
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1].rstrip() + "…"
+    return cleaned
 
 
 def _strip_html(content: str) -> str:
@@ -289,6 +316,8 @@ def fetch_reddit_posts(
     start_date: str | None = None,
     end_date: str | None = None,
     screen=None,
+    max_items: int = MAX_ITEMS,
+    max_chars: int = MAX_ITEM_CHARS,
 ) -> str:
     """Fetch recent Reddit posts mentioning ``ticker`` across finance
     subreddits (by default ``subreddits_for(ticker)``) and return them as a
@@ -374,6 +403,7 @@ def fetch_reddit_posts(
         by_sub.setdefault(sub_of(p).lower(), (sub_of(p), []))[1].append(p)
 
     page_full = any(n >= _FEED_PAGE for n in term_lengths)
+    budget = max(0, int(max_items))
     blocks = []
     for sub, sub_posts in by_sub.values():
         if not sub_posts:
@@ -385,18 +415,28 @@ def fetch_reddit_posts(
                     if page_full else f"r/{sub}: <no posts found mentioning {mention}>"
                 )
             continue
-        sub_posts = sub_posts[:limit_per_sub]  # the feed is newest-first
+        # Per-subreddit quota first (so one busy subreddit cannot crowd the
+        # others out), then a hard run-wide cap on what reaches the prompt.
+        take = min(len(sub_posts), limit_per_sub, budget)
+        if take <= 0:
+            blocks.append(
+                f"r/{sub}: <{len(sub_posts)} further post(s) beyond the "
+                f"{max_items}-item prompt cap>"
+            )
+            continue
+        budget -= take
+        sub_posts = sub_posts[:take]  # the feed is newest-first
         lines = [f"r/{sub} — {len(sub_posts)} recent posts mentioning {mention}:"]
         for p in sub_posts:
-            title = (p.get("title") or "").replace("\n", " ").strip()
             created = p.get("created_utc")
             created_str = time.strftime("%Y-%m-%d", time.gmtime(created)) if created else "?"
-            selftext = (p.get("selftext") or "").replace("\n", " ").strip()
-            if len(selftext) > 240:
-                selftext = selftext[:240] + "…"
+            title = _plain(p.get("title"), max_chars)
+            # Title and body share one budget: a long title must not buy a post
+            # a longer slot than a short one.
+            selftext = _plain(p.get("selftext"), max(0, max_chars - len(title) - 1))
             lines.append(
-                f"  [{created_str}] {title}"
-                + (f"\n    body excerpt: {selftext}" if selftext else "")
+                f"  [reddit r/{sub} · {created_str}] {title}"
+                + (f" — {selftext}" if selftext else "")
             )
         blocks.append("\n".join(lines))
     return "\n\n".join(([note] if note else []) + blocks)

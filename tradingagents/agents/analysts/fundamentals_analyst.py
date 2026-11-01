@@ -1,7 +1,11 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.analysts.turn import take_turn
-from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.context import (
+    UNTRUSTED_DATA_PREAMBLE,
+    get_instrument_context_from_state,
+    get_language_instruction,
+)
 from tradingagents.agents.tools import (
     get_balance_sheet,
     get_cashflow,
@@ -33,6 +37,7 @@ def create_fundamentals_analyst(llm):
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, and `get_insider_transactions` for recent insider buying and selling, and `get_ir_facts` for the issuer's OWN key figures, guidance and calendar with their reference dates."
             + " Where `get_ir_facts` and a vendor statement disagree, name both, say which perimeter each uses (continued vs total-group operations, fiscal year vs quarter), and prefer the issuer's own figure for what the issuer reported — vendor fundamentals frequently mix perimeters."
             + " Never present a prior-year reference date as the current quarter."
+            + " " + UNTRUSTED_DATA_PREAMBLE
             + get_language_instruction()
         )
 

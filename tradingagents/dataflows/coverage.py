@@ -57,6 +57,54 @@ EXPECTED_METHODS = {
     ),
 }
 
+# What kind of source a vendor is. The point is not to score trust in the
+# abstract, but to stop an aggregator's take from reading like a filing: a claim
+# that moves a rating should be able to name a source whose class supports it.
+# ``official`` = a regulator or exchange register, ``first_party`` = the issuer
+# itself, ``aggregator`` = a licensed or open news/fundamentals feed,
+# ``social`` = user-generated posts, ``unknown`` = an unmapped vendor (reported
+# as unknown rather than guessed).
+SOURCE_CLASSES = {
+    "ureg_pdmr": "official",
+    "ureg_capital": "official",
+    "sec_edgar": "official",
+    "issuer_ir": "first_party",
+    "issuer_rss": "first_party",
+    "issuer_facts": "first_party",
+    "marketaux": "aggregator",
+    "finnhub": "aggregator",
+    "yfinance": "aggregator",
+    "alpha_vantage": "aggregator",
+    "news_supplement": "aggregator",   # operator-built snapshot of external sources
+    "reddit": "social",
+    "stocktwits": "social",
+}
+SOURCE_CLASS_ORDER = ("official", "first_party", "aggregator", "social", "unknown")
+
+#: Classes that can carry a rating-changing claim on their own.
+DURABLE_CLASSES = ("official", "first_party")
+
+
+def source_class(vendor: str) -> str:
+    """The trust class of one vendor; ``unknown`` for an unmapped name."""
+    return SOURCE_CLASSES.get(str(vendor or "").strip().lower(), "unknown")
+
+
+def classes_in(snap: dict) -> dict[str, list[str]]:
+    """Group this run's serving vendors by class, in a stable order.
+
+    Reads only the registry's own ``served_by`` records, so a class appears
+    because a vendor actually answered a call — never because a source exists.
+    """
+    grouped: dict[str, list[str]] = {}
+    for rec in ((snap or {}).get("methods") or {}).values():
+        for vendor in rec.get("served_by") or []:
+            grouped.setdefault(source_class(vendor), [])
+            if vendor not in grouped[source_class(vendor)]:
+                grouped[source_class(vendor)].append(vendor)
+    return {name: grouped[name] for name in SOURCE_CLASS_ORDER if name in grouped}
+
+
 _lock = threading.RLock()
 _methods: dict[str, dict] = {}
 _calls = 0
@@ -152,6 +200,23 @@ def render_context(snap: dict, asset_type: str | None = None, max_lines: int = 1
         "DATA COVERAGE — which inputs this run actually received.",
         f"- Expected inputs delivered cleanly: {len(delivered)}/{len(expected)}",
     ]
+    classes = classes_in(snap)
+    if classes:
+        lines.append(
+            "- Source classes that answered: "
+            + "; ".join(f"{name} ({', '.join(vendors)})" for name, vendors in classes.items())
+        )
+        durable = [c for c in DURABLE_CLASSES if classes.get(c)]
+        lines.append(
+            "- A claim that moves the rating needs a source in "
+            + " or ".join(DURABLE_CLASSES)
+            + (
+                f" (this run has: {', '.join(durable)})"
+                if durable
+                else " — this run received NONE, so an opinion from social/aggregator "
+                     "content must not be stated as established fact"
+            )
+        )
     if degraded:
         lines.append("- Degraded or unavailable: " + ", ".join(degraded))
     missing = [m for m in expected if m not in methods]
@@ -182,8 +247,8 @@ def render_markdown(
         return ""
     expected = _expected(asset_type)
     rows = [
-        "| Input | Status | Served by | Skipped |",
-        "| --- | --- | --- | --- |",
+        "| Input | Status | Served by | Class | Skipped |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for method in sorted(methods):
         rec = methods[method]
@@ -191,16 +256,28 @@ def render_markdown(
             f"{s['vendor']} ({s['state']})" for s in rec["skips"]
         ) or "—"
         served = ", ".join(rec["served_by"]) or "—"
-        rows.append(f"| `{method}` | {rec['status']} | {served} | {skipped} |")
+        classes = ", ".join(sorted({source_class(v) for v in rec["served_by"]})) or "—"
+        rows.append(f"| `{method}` | {rec['status']} | {served} | {classes} | {skipped} |")
     not_requested = [m for m in expected if m not in methods]
 
+    classes = classes_in(snap)
     out = [
         "Which inputs this run requested, who served them, and which vendors were "
         "skipped. Derived from the routing layer's own records — a method that is "
         "absent was not requested by an analyst this run, and is not reported as "
         "a data failure.",
         "",
+        "**Source classes** — `official` (regulator/exchange register), "
+        "`first_party` (the issuer itself), `aggregator` (news/fundamentals feed), "
+        "`social` (user-generated posts).",
+        "",
     ]
+    if classes:
+        out.append("**Answered in this run:** " + "; ".join(
+            f"`{name}` — {', '.join(f'`{v}`' for v in vendors)}"
+            for name, vendors in classes.items()
+        ))
+        out.append("")
     if window_lines:
         out += ["**Analysis windows**", ""] + [f"- {line}" for line in window_lines] + [""]
     out += ["\n".join(rows), ""]

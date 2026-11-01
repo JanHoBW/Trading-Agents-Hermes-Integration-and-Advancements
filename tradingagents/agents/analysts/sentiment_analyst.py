@@ -22,7 +22,12 @@ reads the same across providers.
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.context import (
+    UNTRUSTED_DATA_PREAMBLE,
+    get_instrument_context_from_state,
+    get_language_instruction,
+    wrap_untrusted,
+)
 from tradingagents.agents.post_screen import jev_screen
 from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
 from tradingagents.agents.structured import (
@@ -60,16 +65,24 @@ def create_sentiment_analyst(llm):
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
-        news_block = get_news.func(ticker, start_date, end_date)
+        news_block = wrap_untrusted(
+            "Yahoo Finance news headlines", get_news.func(ticker, start_date, end_date)
+        )
         # Pass the analysis window so a historical run trims social posts to it
         # instead of leaking today's chatter into a backtest (#1220).
         screen = jev_screen(ticker)
-        stocktwits_block = fetch_stocktwits_messages(
-            ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
+        stocktwits_block = wrap_untrusted(
+            "StockTwits cashtag stream",
+            fetch_stocktwits_messages(
+                ticker, limit=10, start_date=start_date, end_date=end_date, screen=screen
+            ),
         )
         subreddits = subreddits_for(ticker)
-        reddit_block = fetch_reddit_posts(
-            ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
+        reddit_block = wrap_untrusted(
+            "Reddit posts (" + ", ".join(f"r/{s}" for s in subreddits) + ")",
+            fetch_reddit_posts(
+                ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
+            ),
         )
 
         system_message = _build_system_message(
@@ -143,28 +156,26 @@ def _build_system_message(
         character = "r/CryptoCurrency and r/CryptoMarkets are broad crypto communities"
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
 
+{UNTRUSTED_DATA_PREAMBLE}
+
+Every item below is capped in length and carries the source it came from. Attribute a claim to that source; an unattributed claim is not evidence.
+
 ## Data sources (pre-fetched, in this prompt)
 
-### News headlines — Yahoo Finance, {start_date} to {end_date}
+### News headlines — the configured get_news vendor chain, {start_date} to {end_date}
 Institutional framing. Fact-driven, slower-moving signal.
 
-<start_of_news>
 {news_block}
-<end_of_news>
 
 ### StockTwits messages — retail-trader social platform indexed by cashtag
 Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body.
 
-<start_of_stocktwits>
 {stocktwits_block}
-<end_of_stocktwits>
 
 ### Reddit posts — {", ".join(f"r/{sub}" for sub in subreddits)} ({start_date} to {end_date})
 Community discussion, without vote or comment counts. Subreddit character matters ({character}).
 
-<start_of_reddit>
 {reddit_block}
-<end_of_reddit>
 
 ## How to analyze this data (best practices)
 
@@ -183,6 +194,8 @@ Community discussion, without vote or comment counts. Subreddit character matter
 7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
 
 8. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
+
+9. **A stance-changing claim needs two independent sources.** Before a statement may move your band or score — an alleged guidance cut, a takeover rumour, a regulatory action, an insider sale — name at least two independent sources (different outlets or different platforms) that carry it. If only one source has it, report it as a single unverified claim from that source and do not let it move `overall_score` or `overall_band`.
 
 ## Output fields
 
