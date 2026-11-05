@@ -349,7 +349,7 @@ Pitfalls: `--print-to-pdf` needs an absolute path under the user's home/workspac
 
 ## Post-run review (finished report vs live prices)
 
-When the user asks days after a run to look at the latest report against current prices ("Bewerte die Schwankungen der letzten X Tage", "ist das ein technisches Einstiegssignal?"): follow `references/post-run-review.md` — locate the newest run dir, read only `5_portfolio/decision.md` + `1_analysts/market.md`, fetch live Yahoo data, recompute indicators with `scripts/live_indicators.py`, and evaluate against the report's own trigger rules (never contradict its hard rules; state what would confirm next).
+When the user asks days after a run to look at the latest report against current prices ("Bewerte die Schwankungen der letzten X Tage", "ist das ein technisches Einstiegssignal?"): follow `references/post-run-review.md` — locate the newest run dir, read only `5_portfolio/decision.md` + `1_analysts/market.md`, fetch live Yahoo data, recompute indicators with `scripts/live_indicators.py`, and evaluate against the report's own trigger rules (never contradict its hard rules; state what would confirm next). Save the chat summary additionally as `~/Hermes_Stock_Analysis/<TICKER>/<YYYY-MM-DD>_<TICKER>_einschätzung.md` and name the run dir in it — convention: `stock-quick-analysis/references/chat-analysis-output.md`.
 
 ## Portfolio analysis (book-level)
 
